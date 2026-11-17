@@ -106,6 +106,15 @@ try {
     $dataPrint = Get-DataPrint $fakePrint
     if ($dataPrint.Ano -ne '2026' -or $dataPrint.Mes -ne '11') { throw 'screenshots: data do nome falhou' }
 
+    # 1j) limpar-screenshots: varredura bottom-up de pastas vazias (apps + legado)
+    $DestinoBase = Join-Path $Tmp 'Screenshots'
+    foreach ($d in @('AppVazio', '2026\01', 'ComPrint')) { New-Item -ItemType Directory -Path (Join-Path $DestinoBase $d) -Force | Out-Null }
+    New-Item -ItemType File -Path (Join-Path $DestinoBase 'ComPrint\a.jpg') | Out-Null
+    $vazias = Remove-PastasVazias
+    if ($vazias -notcontains 'AppVazio') { throw 'screenshots: pasta de app vazia não removida' }
+    if ($vazias -notcontains '2026\01' -or $vazias -notcontains '2026') { throw 'screenshots: pastas legadas vazias não removidas (bottom-up)' }
+    if (-not (Test-Path (Join-Path $DestinoBase 'ComPrint\a.jpg'))) { throw 'screenshots: removeu pasta que tinha arquivo' }
+
     # 2) caminho de destino montado
     $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-RICARDO ISHIDA' })[0]
     if ($P.Nuvem -ne 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/Jacupiranga/RICARDO ISHIDA - RESUMO') { throw "nuvem errada: $($P.Nuvem)" }

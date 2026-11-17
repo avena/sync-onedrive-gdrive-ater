@@ -22,8 +22,11 @@
 
     Ignorados: ocultos (.stfolder, .android, .deleteRecord, .globalTrash,
     .tmfs, .trashed-*), ~syncthing~*.tmp e prints ja em Screenshots\<App>\
-    (idempotente). Ao final, remove pastas vazias do layout antigo AAAA\MM.
-    Manifesto: runs\AAAA-MM-DD_HH-mm-ss__SCREENSHOTS__limpar-screenshots.json.
+    (idempotente). Ao final de TODA execucao real (organizacao ou -LimparAte),
+    varredura bottom-up remove qualquer subpasta vazia de Screenshots (apps
+    esvaziados manualmente + AAAA\MM legado; ocultas .stfolder preservadas).
+    Manifesto: runs\AAAA-MM-DD_HH-mm-ss__SCREENSHOTS__limpar-screenshots.json
+    com pastas_vazias_removidas (ambos os modos geram manifesto).
 .PARAMETER LimparAte
     Corte AAAA-MM. Lista prints de TODAS as pastas de app cuja data do nome
     (fallback LastWriteTime) seja <= ao corte; exige APAGAR e remove
@@ -158,25 +161,24 @@ function Get-NomeSemColisao {
 }
 
 function Remove-PastasVazias {
-    # Meses/anos vazios do layout antigo + pastas de app que ficarem vazias.
-    foreach ($anoDir in @(Get-ChildItem -LiteralPath $DestinoBase -Directory | Where-Object { $_.Name -match '^\d{4}$' })) {
-        foreach ($mesDir in @(Get-ChildItem -LiteralPath $anoDir.FullName -Directory | Where-Object { $_.Name -match '^(0[1-9]|1[0-2])$' })) {
-            if (@(Get-ChildItem -LiteralPath $mesDir.FullName -Force).Count -eq 0) {
-                Remove-Item -LiteralPath $mesDir.FullName -Recurse -Force
-                Write-Host "  [REMOVIDA] pasta vazia: $($anoDir.Name)\$($mesDir.Name)"
-            }
-        }
-        if (@(Get-ChildItem -LiteralPath $anoDir.FullName -Force).Count -eq 0) {
-            Remove-Item -LiteralPath $anoDir.FullName -Recurse -Force
-            Write-Host "  [REMOVIDA] pasta de ano vazia: $($anoDir.Name)"
-        }
-    }
-    foreach ($d in @(Get-ChildItem -LiteralPath $DestinoBase -Directory)) {
+    # Bottom-up (profundidade decrescente): remove QUALQUER subpasta vazia —
+    # apps esvaziados manualmente pelo usuario e anos/meses legados (2026\01..11).
+    # Preserva pastas ocultas (.stfolder etc. — marcadores do Syncthing).
+    # Retorna a lista de caminhos relativos removidos (para o manifesto).
+    $removidas = [System.Collections.Generic.List[string]]::new()
+    if (-not (Test-Path -LiteralPath $DestinoBase)) { return ,$removidas }
+    $dirs = @(Get-ChildItem -LiteralPath $DestinoBase -Recurse -Directory -Force |
+        Where-Object { $_.Name -notlike '.*' } |
+        Sort-Object { $_.FullName.Split('\').Count } -Descending)
+    foreach ($d in $dirs) {
         if (@(Get-ChildItem -LiteralPath $d.FullName -Force).Count -eq 0) {
-            Remove-Item -LiteralPath $d.FullName -Recurse -Force
-            Write-Host "  [REMOVIDA] pasta vazia: $($d.Name)"
+            Remove-Item -LiteralPath $d.FullName -Force
+            $rel = $d.FullName.Substring($DestinoBase.Length + 1)
+            $removidas.Add($rel)
+            Write-Host "  [REMOVIDA] pasta vazia: $rel"
         }
     }
+    return ,$removidas
 }
 
 function Get-SomaBytes {
@@ -244,8 +246,22 @@ function Invoke-Limpeza {
         return
     }
     foreach ($a in $alvos) { Remove-Item -LiteralPath $a.Arquivo.FullName -Force }
-    Remove-PastasVazias
+    $pastasRemovidas = Remove-PastasVazias
+
+    # Manifesto de auditoria permanente em runs\
+    if (-not (Test-Path -LiteralPath $RunsDir)) { New-Item -ItemType Directory -Force -Path $RunsDir | Out-Null }
+    $ts = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+    $runJson = Join-Path $RunsDir "${ts}__SCREENSHOTS__limpar-screenshots.json"
+    $registro = [PSCustomObject]@{
+        script = 'limpar-screenshots'; modo = 'limpeza_ate'; timestamp = $ts; corte = $Corte
+        destino = $DestinoBase
+        totais = [PSCustomObject]@{ arquivos_removidos = $alvos.Count; bytes_removidos = (Get-SomaBytes $alvos) }
+        pastas_vazias_removidas = $pastasRemovidas
+        arquivos = @($alvos | ForEach-Object { [PSCustomObject]@{ origem = $_.Arquivo.FullName; pasta = $_.Pasta; data = $_.Chave; bytes = $_.Bytes } })
+    }
+    $registro | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $runJson -Encoding UTF8
     Write-Host "`n[OK] Limpeza concluida: $($alvos.Count) arquivo(s), $([math]::Round($totMB,1)) MB liberados." -ForegroundColor Green
+    Write-Host "[OK] Manifesto de auditoria salvo em: $runJson" -ForegroundColor Cyan
 }
 
 # ================= MODO PADRAO (ORGANIZACAO POR APLICATIVO) =================
@@ -293,12 +309,13 @@ function Invoke-Migracao {
         $acao = if ($ManterLockscreen) { 'serão MANTIDOS em Lockscreen\' } else { 'serão REMOVIDOS automaticamente' }
         Write-Host ("`n  LOCKSCREEN: {0} print(s), {1:N1} MB {2}." -f $locks.Count, ($lockBytes / 1MB), $acao) -ForegroundColor $(if ($ManterLockscreen) { 'Yellow' } else { 'Red' })
     }
-    if ($detectados.Count -eq 0) { Write-Host "[OK] Nada a fazer." -ForegroundColor Green; return }
-
     if ($WhatIfPreference) {
-        Write-Host "`n[SIMULAÇÃO] $($paraMover.Count) print(s) seriam movidos, $($locks.Count) lockscreen(s) $(if ($ManterLockscreen) { 'mantidos' } else { 'removidos' }). Nada foi alterado (-WhatIf)." -ForegroundColor Cyan
+        if ($detectados.Count -eq 0) { Write-Host "`n[OK] Nada a fazer." -ForegroundColor Green }
+        else { Write-Host "`n[SIMULAÇÃO] $($paraMover.Count) print(s) seriam movidos, $($locks.Count) lockscreen(s) $(if ($ManterLockscreen) { 'mantidos' } else { 'removidos' }). Nada foi alterado (-WhatIf)." -ForegroundColor Cyan }
         return
     }
+    # Execucao real: mesmo com 0 prints novos, a varredura de pastas vazias roda
+    # (apps esvaziados manualmente pelo usuario tambem sao limpos).
 
     # 1) Remocao automatica de lockscreen (salvo -ManterLockscreen)
     $removidos = [System.Collections.Generic.List[object]]::new()
@@ -325,8 +342,8 @@ function Invoke-Migracao {
         })
     }
 
-    # 3) Pastas vazias do layout antigo (AAAA\MM) e apps vazios
-    Remove-PastasVazias
+    # 3) Varredura bottom-up: qualquer subpasta vazia (apps + AAAA\MM legado)
+    $pastasRemovidas = Remove-PastasVazias
 
     # 4) Manifesto de auditoria permanente em runs\
     if (-not (Test-Path -LiteralPath $RunsDir)) { New-Item -ItemType Directory -Force -Path $RunsDir | Out-Null }
@@ -348,6 +365,7 @@ function Invoke-Migracao {
             bytes_lockscreen_removidos = Get-SomaBytes $removidos
         }
         por_aplicativo = $porApp; lockscreen_removidos = $removidos; arquivos = $movidos
+        pastas_vazias_removidas = $pastasRemovidas
     }
     $registro | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $runJson -Encoding UTF8
 

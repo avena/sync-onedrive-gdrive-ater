@@ -272,11 +272,13 @@ Na validação real (17/11/2026, com o layout antigo `2026\01..11` já populado 
 
 **Lockscreen** (`$AppsLockscreen = lockscreen, com.android.systemui`): removido automaticamente com `Remove-Item -Force` (contagem + MB no console e no manifesto), **salvo** `-WhatIf` ou `-ManterLockscreen` — nestes casos é organizado em `Lockscreen\`.
 
-**Organização**: destino `$DestinoBase\<App>\<nome original>` — como os nomes começam com `Screenshot_AAAA-MM-DD...`, ficam naturalmente ordenados por data dentro de cada pasta. Colisão de nomes ganha sufixo `__2`, `__3`… antes da extensão. Ao final, `Remove-PastasVazias` apaga meses/anos vazios do layout antigo (`2026\01..11`) e pastas de app vazias.
+**Organização**: destino `$DestinoBase\<App>\<nome original>` — como os nomes começam com `Screenshot_AAAA-MM-DD...`, ficam naturalmente ordenados por data dentro de cada pasta. Colisão de nomes ganha sufixo `__2`, `__3`… antes da extensão.
+
+**Pastas vazias (`Remove-PastasVazias`)**: ao final de **toda execução real** (organização **ou** `-LimparAte`, mesmo com 0 prints novos), varre todas as subpastas de `Screenshots` em **profundidade decrescente (bottom-up)** e remove qualquer pasta vazia — apps cujos prints o usuário apagou manualmente, meses/anos legados (`2026\01..11` → `2026`) e aninhamentos futuros. Pastas ocultas (`.stfolder`, marcadores do Syncthing) são **preservadas**. A função retorna a lista de caminhos relativos removidos, gravada no manifesto como **`pastas_vazias_removidas`**.
 
 **Data do print** (`Get-DataPrint`, usada no `-LimparAte`): `AAAAMMDD` → `AAAA-MM-DD` no nome (validação de mês/dia + fronteiras de dígito) → fallback `LastWriteTime`.
 
-**Auditoria**: ranking por app (quantidade + MB) no console e manifesto permanente `runs\AAAA-MM-DD_HH-mm-ss__SCREENSHOTS__limpar-screenshots.json` com `totais` (movidos + lockscreen removidos), `por_aplicativo`, `lockscreen_removidos` e cada `origem → destino` + app + critério + bytes.
+**Auditoria**: ranking por app (quantidade + MB) no console e manifesto permanente `runs\AAAA-MM-DD_HH-mm-ss__SCREENSHOTS__limpar-screenshots.json` com `totais` (movidos + lockscreen removidos), `por_aplicativo`, `lockscreen_removidos`, cada `origem → destino` + app + critério + bytes e **`pastas_vazias_removidas`**. O modo `-LimparAte` também gera manifesto (`modo: limpeza_ate`, `corte`, `totais` de removidos, `arquivos` e `pastas_vazias_removidas`). `-WhatIf` não gera manifesto.
 
 ### 11.4 Limpeza por corte temporal (`-LimparAte`)
 
@@ -284,7 +286,7 @@ Na validação real (17/11/2026, com o layout antigo `2026\01..11` já populado 
 2. Varre **todas as pastas de aplicativo** em `$DestinoBase` (recursivo, ignorando ocultos/`.trashed-*`/`~syncthing~*.tmp`; alcança também o layout antigo `AAAA\MM` e a raiz) e seleciona os prints cuja **data extraída do nome** (fallback `LastWriteTime`) tenha chave `AAAA-MM` **≤** ao corte (comparação de string).
 3. Lista os alvos agrupados por pasta (arquivos + MB) e o total; avisa em vermelho que **o Syncthing espelhará a remoção no celular**.
 4. Exige `Read-Host` com resposta **exata** `APAGAR` (case-sensitive); qualquer outra coisa cancela.
-5. `Remove-Item -Force` em cada arquivo e, ao final, `Remove-PastasVazias` (pastas de app que ficaram vazias + meses/anos do layout antigo). `-WhatIf` lista sem pedir confirmação e sem remover.
+5. `Remove-Item -Force` em cada arquivo e, ao final, `Remove-PastasVazias` (varredura bottom-up de **qualquer** pasta vazia, não só as esvaziadas pelo corte). Grava manifesto `runs\…__SCREENSHOTS__limpar-screenshots.json` com os removidos + `pastas_vazias_removidas`. `-WhatIf` lista sem pedir confirmação, sem remover e sem manifesto.
 
 ### 11.5 Decisões congeladas
 
@@ -292,6 +294,7 @@ Na validação real (17/11/2026, com o layout antigo `2026\01..11` já populado 
 - **Ordenação por data vem de graça** — os nomes `Screenshot_AAAA-MM-DD...` já ordenam cronologicamente dentro de cada pasta de app; não precisa de hierarquia `AAAA\MM` (o layout antigo é absorvido e as pastas vazias removidas).
 - **Lockscreen é lixo** — `lockscreen`/`com.android.systemui` some automaticamente (18 prints/15,3 MB na validação); `-ManterLockscreen` é a válvula de escape para auditoria.
 - **Re-execução idempotente** — prints já em `Screenshots\<App>\` são pulados na varredura; rodar de novo só organiza os novos/soltos (o sync ao vivo do celular entrega prints novos na raiz entre execuções).
+- **Pastas vazias sempre limpas (bottom-up)** — toda execução real varre em profundidade decrescente e remove qualquer subpasta vazia, inclusive apps esvaziados manualmente pelo usuário; ocultas (`.stfolder`) preservadas para não quebrar o Syncthing. A lista vai no manifesto (`pastas_vazias_removidas`).
 - **`-LimparAte` pela data do nome, não pela pasta** — com a organização por app, o corte temporal varre todas as pastas de app e compara a data extraída do arquivo; continua funcionando mesmo antes de migrar o layout antigo.
 - **Critério 4 conservador** — só resolução exata + EXIF vazio + nome não `IMG_*`; na dúvida, o arquivo fica na origem.
 - **Ocultos e `.trashed-*` ignorados** — pastas de sistema/Syncthing (`.stfolder`, `.android`, `.deleteRecord`, `.globalTrash`, `.tmfs`) e a lixeira `.trashed-*` não entram na migração nem na contagem.
