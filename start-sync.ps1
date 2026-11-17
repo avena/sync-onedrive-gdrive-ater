@@ -11,8 +11,19 @@ param(
 
 # ================= VERIFICAÇÃO E INSTALAÇÃO DO RCLONE =================
 function Test-AndInstallRclone {
-    # Verifica se rclone já está instalado
-    if (Get-Command rclone -ErrorAction SilentlyContinue) {
+    # Verifica se rclone já está instalado (inclui caminhos comuns do winget)
+    function Test-RcloneAvailable {
+        if (Get-Command rclone -ErrorAction SilentlyContinue) { return $true }
+        # Verifica pasta de links do winget (onde winget coloca executáveis)
+        $WinGetLinks = "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
+        if (Test-Path "$WinGetLinks\rclone.exe") {
+            $env:PATH += ";$WinGetLinks"
+            return $true
+        }
+        return $false
+    }
+
+    if (Test-RcloneAvailable) {
         Write-Host "[OK] rclone já está instalado: $(rclone version | Select-Object -First 1)" -ForegroundColor Green
         return $true
     }
@@ -50,10 +61,12 @@ function Test-AndInstallRclone {
             scoop install rclone
         }
 
-        # Recarrega o PATH para pegar o rclone recém-instalado
+        # Recarrega o PATH para pegar o rclone recém-instalado (inclui links do winget)
         $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        $WinGetLinks = "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
+        if (Test-Path $WinGetLinks) { $env:PATH += ";$WinGetLinks" }
 
-        if (Get-Command rclone -ErrorAction SilentlyContinue) {
+        if (Test-RcloneAvailable) {
             Write-Host "[OK] rclone instalado com sucesso: $(rclone version | Select-Object -First 1)" -ForegroundColor Green
             return $true
         } else {
@@ -191,6 +204,9 @@ do {
     Write-Host " [2] Sincronizar AGORA (Enviar novos e atualizados)" -ForegroundColor Green
     Write-Host " [3] Abrir pasta de Logs" -ForegroundColor White
     Write-Host " [4] Testar conexão com Google Drive (SA Consult)" -ForegroundColor White
+    Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host " [5] Configurar rclone (rclone config)" -ForegroundColor Magenta
+    Write-Host " [6] Ver status do rclone (versão e remotes)" -ForegroundColor Magenta
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 
@@ -212,6 +228,21 @@ do {
         "4" {
             Write-Host "`nListando pastas dentro de VALE DO RIBEIRA/FERNANDO..." -ForegroundColor Cyan
             rclone lsd "$RemotoDrive" --drive-shared-with-me
+            Read-Host "`nPressione Enter para voltar ao menu"
+        }
+        "5" {
+            Write-Host "`nAbrindo configurador do rclone..." -ForegroundColor Cyan
+            Write-Host "Siga os passos: n → name: gdrive_saconsult → drive → scope: 1 → y (browser) → conta da consultoria → n → y → q" -ForegroundColor Gray
+            rclone config
+            Read-Host "`nPressione Enter para voltar ao menu"
+        }
+        "6" {
+            Write-Host "`n=== STATUS DO RCLONE ===" -ForegroundColor Cyan
+            rclone version
+            Write-Host "`n--- Remotes configurados ---" -ForegroundColor Cyan
+            rclone listremotes
+            Write-Host "`n--- Detalhes do gdrive_saconsult ---" -ForegroundColor Cyan
+            rclone config show gdrive_saconsult 2>$null || Write-Host "Remote 'gdrive_saconsult' não encontrado." -ForegroundColor Yellow
             Read-Host "`nPressione Enter para voltar ao menu"
         }
         "0" { Write-Host "Saindo..." -ForegroundColor Gray }
