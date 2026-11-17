@@ -17,7 +17,9 @@ Sincronizador unidirecional para copiar pastas de produtores rurais do **OneDriv
 winget install --id Microsoft.PowerShell --source winget
 
 # Rclone - o script instala automaticamente se não tiver
-winget install --id Rclone.Rclone --source winget
+# (preferência: Scoop; fallback: winget)
+scoop install rclone
+# ou: winget install --id Rclone.Rclone --source winget
 
 # Configurar remote do Google Drive (conta da consultoria)
 rclone config
@@ -90,7 +92,17 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 | `[2]` | **Sincronizar AGORA** — Executa `rclone copy --update` real |
 | `[3]` | **Abrir pasta de Logs** — Abre `logs\` no Explorer |
 | `[4]` | **Testar conexão** — Lista pastas no `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
+| `[5]` | **Configurar rclone** — Abre `rclone config` com o passo a passo |
+| `[6]` | **Status do rclone** — Versão, remotes e config redigida (tokens ocultos) |
 | `[0]` | Sair |
+
+### Comportamento automático do script
+
+- **rclone ausente** → pergunta e instala via **Scoop** (preferência) ou **winget**
+- **Modo `-Auto`** → instala sem perguntar (o Agendador não tem console)
+- **Remote não configurado** → aborta na hora com mensagem clara (não gera 15 erros no log)
+- **Exit code** → `0` se tudo ok, `1` se alguma pasta falhar (o Agendador mostra "falhou")
+- **Retenção de logs** → apaga automaticamente `.log` com mais de 7 dias
 
 ## 🔧 Configurações Importantes (edite no `start-sync.ps1`)
 
@@ -113,10 +125,7 @@ $Atividades = @("ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE I
 - **Token OAuth** (`%APPDATA%\rclone\rclone.conf`): **NUNCA** commite no Git nem sincronize na nuvem
 - **Modo `--update`**: Só adiciona/atualiza — **nunca deleta** arquivos que a equipe colocou no Drive
 - **`-MultipleInstances IgnoreNew`**: Se sync demorar >5 min, não abre segunda instância por cima
-- **Limpeza de logs**: Adicione no script se quiser auto-limpar logs >7 dias:
-  ```powershell
-  Get-ChildItem $LogDir -Filter *.log | Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | Remove-Item
-  ```
+- **Limpeza de logs**: já embutida — arquivos `.log` com mais de 7 dias são apagados a cada execução
 
 ## 🧪 Testes Rápidos
 

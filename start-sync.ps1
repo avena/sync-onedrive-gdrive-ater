@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sincronizador unidirecional (OneDrive Local -> Google Drive SA Consult)
 .DESCRIPTION
@@ -10,18 +10,20 @@ param(
 )
 
 # ================= VERIFICAÇÃO E INSTALAÇÃO DO RCLONE =================
-function Test-AndInstallRclone {
-    # Verifica se rclone já está instalado (inclui caminhos comuns do winget)
-    function Test-RcloneAvailable {
-        if (Get-Command rclone -ErrorAction SilentlyContinue) { return $true }
-        # Verifica pasta de links do winget (onde winget coloca executáveis)
-        $WinGetLinks = "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
-        if (Test-Path "$WinGetLinks\rclone.exe") {
-            $env:PATH += ";$WinGetLinks"
+function Test-RcloneAvailable {
+    if (Get-Command rclone -ErrorAction SilentlyContinue) { return $true }
+    # shims do Scoop e links do winget podem não estar no PATH desta sessão
+    foreach ($Dir in @("$env:USERPROFILE\scoop\shims", "$env:LOCALAPPDATA\Microsoft\WinGet\Links")) {
+        if (Test-Path "$Dir\rclone.exe") {
+            if ($env:PATH -notlike "*$Dir*") { $env:PATH += ";$Dir" }
             return $true
         }
-        return $false
     }
+    return $false
+}
+
+function Test-AndInstallRclone {
+    param([switch]$Silent) # -Silent: sem prompt (modo -Auto / Agendador não tem console)
 
     if (Test-RcloneAvailable) {
         Write-Host "[OK] rclone já está instalado: $(rclone version | Select-Object -First 1)" -ForegroundColor Green
@@ -30,11 +32,8 @@ function Test-AndInstallRclone {
 
     Write-Host "[AVISO] rclone não encontrado no sistema." -ForegroundColor Yellow
 
-    # Verifica gerenciadores de pacote disponíveis (preferência: scoop > winget)
-    $TemScoop  = Get-Command scoop -ErrorAction SilentlyContinue
-    $TemWinget = Get-Command winget -ErrorAction SilentlyContinue
-
-    $Gerenciador = if ($TemScoop) { "scoop" } elseif ($TemWinget) { "winget" } else { $null }
+    # Preferência: scoop > winget
+    $Gerenciador = if (Get-Command scoop -ErrorAction SilentlyContinue) { "scoop" } elseif (Get-Command winget -ErrorAction SilentlyContinue) { "winget" } else { $null }
 
     if (-not $Gerenciador) {
         Write-Host "[ERRO] Nem scoop nem winget encontrados. Instale um deles primeiro." -ForegroundColor Red
@@ -43,16 +42,15 @@ function Test-AndInstallRclone {
         return $false
     }
 
-    # Pergunta se deseja instalar
-    if (-not $Auto) {
+    if (-not $Silent) {
         $Resposta = Read-Host "Deseja instalar o rclone via $Gerenciador? (S/N)"
         if ($Resposta -notin @('s','S','y','Y')) {
             Write-Host "Instalação cancelada. O script não funcionará sem rclone." -ForegroundColor Red
             return $false
         }
+    } else {
+        Write-Host "Instalando rclone automaticamente via $Gerenciador..." -ForegroundColor Cyan
     }
-
-    Write-Host "Instalando rclone via $Gerenciador..." -ForegroundColor Cyan
 
     try {
         if ($Gerenciador -eq "scoop") {
@@ -61,30 +59,25 @@ function Test-AndInstallRclone {
             winget install --id Rclone.Rclone --source winget --accept-source-agreements --accept-package-agreements
         }
 
-        # Recarrega o PATH para pegar o rclone recém-instalado (inclui links do winget)
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        $WinGetLinks = "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
-        if (Test-Path $WinGetLinks) { $env:PATH += ";$WinGetLinks" }
+        # Recarrega PATH da máquina + usuário (teste abaixo cobre shims/links)
+        $env:PATH = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
 
         if (Test-RcloneAvailable) {
             Write-Host "[OK] rclone instalado com sucesso: $(rclone version | Select-Object -First 1)" -ForegroundColor Green
             return $true
-        } else {
-            Write-Host "[ERRO] Falha ao instalar rclone. Reinicie o terminal e tente novamente." -ForegroundColor Red
-            return $false
         }
+        Write-Host "[ERRO] Falha ao instalar rclone. Reinicie o terminal e tente novamente." -ForegroundColor Red
+        return $false
     } catch {
         Write-Host "[ERRO] Exceção durante instalação: $_" -ForegroundColor Red
         return $false
     }
 }
 
-# Executa verificação no início (exceto modo -Auto que assume já configurado)
-if (-not $Auto) {
-    if (-not (Test-AndInstallRclone)) {
-        Read-Host "Pressione Enter para sair"
-        exit 1
-    }
+# Checagem sempre roda (inclusive -Auto), mas sem prompt no Agendador
+if (-not (Test-AndInstallRclone -Silent:$Auto)) {
+    if (-not $Auto) { Read-Host "Pressione Enter para sair" }
+    exit 1
 }
 
 # ================= CONFIGURAÇÕES DO PROJETO =================
@@ -131,11 +124,23 @@ function Invoke-AterSync {
     if (-not (Test-Path $OrigemBase)) {
         Write-Host "`n[ERRO] Pasta base do OneDrive não encontrada:" -ForegroundColor Red
         Write-Host "       $OrigemBase" -ForegroundColor Yellow
-        return
+        return $false
     }
 
     if (-not (Test-Path $LogDir)) {
         New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    }
+
+    # Retenção: apaga logs com mais de 7 dias
+    Get-ChildItem $LogDir -Filter *.log -ErrorAction SilentlyContinue |
+        Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | Remove-Item -Force
+
+    # Pré-checagem: remote configurado? Evita 15 erros CRITICAL idênticos
+    $NomeRemoto = ($RemotoDrive -split ':')[0]
+    if ((rclone listremotes) -notcontains "$NomeRemoto`:") {
+        Write-Host "`n[ERRO] Remote '$NomeRemoto' não configurado no rclone." -ForegroundColor Red
+        Write-Host "       Use a opção [5] do menu (rclone config) para configurar." -ForegroundColor Yellow
+        return $false
     }
 
     $ModoTexto = if ($Simulacao) { "SIMULAÇÃO (DRY-RUN - NADA SERÁ ALTERADO)" } else { "SINCRONIZAÇÃO REAL (COPY)" }
@@ -145,6 +150,7 @@ function Invoke-AterSync {
     Write-Host "============================================================`n" -ForegroundColor Cyan
 
     $ParesEncontrados = 0
+    $ParesComFalha    = 0
 
     foreach ($Cidade in $Cidades) {
         foreach ($Atividade in $Atividades) {
@@ -170,6 +176,7 @@ function Invoke-AterSync {
                 if ($LASTEXITCODE -eq 0) {
                     Write-Host "   Status: Concluído com sucesso.`n" -ForegroundColor Cyan
                 } else {
+                    $ParesComFalha++
                     Write-Host "   Status: Atenção - Rclone retornou código $LASTEXITCODE. Verifique o log.`n" -ForegroundColor Red
                 }
             }
@@ -179,15 +186,17 @@ function Invoke-AterSync {
     if ($ParesEncontrados -eq 0) {
         Write-Host "[AVISO] Nenhuma pasta de Cidade/Atividade encontrada no OneDrive local." -ForegroundColor Yellow
     } else {
-        Write-Host "Processo finalizado ($ParesEncontrados pastas verificadas)." -ForegroundColor Cyan
+        Write-Host "Processo finalizado ($ParesEncontrados pastas verificadas, $ParesComFalha com falha)." -ForegroundColor Cyan
         Write-Host "Log salvo em: $LogFile`n" -ForegroundColor Gray
     }
+
+    return ($ParesComFalha -eq 0)
 }
 
 # ================= EXECUÇÃO AUTOMÁTICA (AGENDADOR) =================
 if ($Auto) {
-    Invoke-AterSync -Simulacao $false
-    exit 0
+    # Exit code importa: Agendador marca a tarefa como falha se retornar != 0
+    if (Invoke-AterSync -Simulacao $false) { exit 0 } else { exit 1 }
 }
 
 # ================= MENU INTERATIVO (EXECUÇÃO MANUAL) =================
@@ -241,8 +250,8 @@ do {
             rclone version
             Write-Host "`n--- Remotes configurados ---" -ForegroundColor Cyan
             rclone listremotes
-            Write-Host "`n--- Detalhes do gdrive_saconsult ---" -ForegroundColor Cyan
-            rclone config show gdrive_saconsult 2>$null || Write-Host "Remote 'gdrive_saconsult' não encontrado." -ForegroundColor Yellow
+            Write-Host "`n--- Config (tokens ocultos) ---" -ForegroundColor Cyan
+            rclone config redacted
             Read-Host "`nPressione Enter para voltar ao menu"
         }
         "0" { Write-Host "Saindo..." -ForegroundColor Gray }

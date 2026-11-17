@@ -1,0 +1,8 @@
+# Logs de sincronização (podem conter caminhos de clientes)
+logs/
+
+# Nunca versionar credenciais do rclone
+rclone.conf
+
+# Configurações locais da IDE
+.codebuddy/
