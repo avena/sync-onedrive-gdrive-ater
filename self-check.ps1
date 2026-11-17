@@ -38,6 +38,15 @@ foreach ($F in $AstC.FindAll({ $args[0] -is [System.Management.Automation.Langua
     . ([scriptblock]::Create($F.Extent.Text))
 }
 
+# Audios: valida sintaxe e carrega só as funções (sem executar a organização)
+$ScriptAudios = Join-Path $PSScriptRoot 'organizar-audios.ps1'
+$ErrosA = $null
+$AstA = [System.Management.Automation.Language.Parser]::ParseFile($ScriptAudios, [ref]$null, [ref]$ErrosA)
+if ($ErrosA.Count) { throw "Sintaxe audios: $($ErrosA[0].Message)" }
+foreach ($F in $AstA.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    . ([scriptblock]::Create($F.Extent.Text))
+}
+
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("ater_check_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
@@ -180,6 +189,13 @@ try {
     $colP = Join-Path $Tmp 'colisao'; New-Item -ItemType Directory -Path $colP -Force | Out-Null
     New-Item -ItemType File -Path (Join-Path $colP 'IMG_20260402_090000.jpg') | Out-Null
     if ((Split-Path (Get-NomeSemColisaoCamera -Pasta $colP -Arquivo $imgT) -Leaf) -ne 'IMG_20260402_090000__2.jpg') { throw 'camera: colisao __2 falhou' }
+
+    # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
+    if ((Get-PastaDestinoAudio '3 de nov., 11.39 Valdecir e Elisangela.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
+    if ((Get-PastaDestinoAudio '10 de jan., 08.32 Clodoaldo .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }
+    if ((Get-PastaDestinoAudio '31 de dez., 23.59.m4a' ([datetime]'2026-12-31 23:59:00')) -ne '2026-12') { throw 'audios: padrao Xiaomi dez falhou' }
+    if ((Get-PastaDestinoAudio 'gravacao renomeada.m4a' ([datetime]'2026-05-10 09:00:00')) -ne '2026-05') { throw 'audios: fallback LastWriteTime falhou' }
+    if ((Get-PastaDestinoAudio '3 de xyz., 11.39 teste.m4a' ([datetime]'2026-07-03 11:39:00')) -ne '2026-07') { throw 'audios: mes invalido deveria cair no fallback' }
 
     # 2) caminho de destino montado
     $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-RICARDO ISHIDA' })[0]
