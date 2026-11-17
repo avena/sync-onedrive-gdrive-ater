@@ -22,7 +22,7 @@ Salve/sincronize as fotos do campo na pasta do **Syncthing** no PC:
 C:\Users\randomacesso\Sync\Camera_Celular\Camera
 ```
 
-- É a variável **`$SyncthingFotos`** no topo do `triagem-campo.ps1` (ajuste se a sua pasta tiver outro nome/caminho).
+- É a variável **`$SyncthingFotos`** no topo do `triagem-campo.ps1` — hoje um **array de raízes em ordem de prioridade** (com dedup por nome): `Camera_Celular_Organizada` (C:) → `E:\Sync\Camera_Celular_Organizada` (disco externo, se conectado) → `Camera_Celular\Camera` (bruta, recém-chegadas). Ajuste se suas pastas tiverem outros nomes/caminhos.
 - No celular, o Syncthing sincroniza `DCIM/Camera` em modo **Enviar apenas** para essa pasta.
 - Estrutura real do Syncthing: `Sync\Camera_Celular\` contém `Camera\` (fotos da câmera, `IMG_AAAAMMDD_HHMMSS.jpg`), `Screenshots\`, `CamScanner\`, `PlantNet\`, `Restored\`, `ScreenRecorder\`. O script usa **só `Camera\`** (as fotos de campo); os `~syncthing~*.tmp` (sync em andamento) são ignorados.
 - **Ative as tags de localização/GPS na câmera** do celular — o script lê o GPS do EXIF para gerar `coordenadas_gps.txt`.
@@ -161,6 +161,8 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ├── start-sync.ps1              # Script principal (menu + modo -Auto)
 ├── triagem-campo.ps1           # Triagem de fotos Syncthing -> OneDrive (revisão interativa + GPS)
 ├── limpar-screenshots.ps1      # Organiza prints por app em Screenshots\<App> + remove lockscreen + limpeza por período
+├── organizar-camera.ps1        # Organiza fotos da câmera por visita (tempo+GPS) em Camera_Celular_Organizada + sync C:/E:
+├── estado-camera.json          # Estado persistente do organizar-camera (totais, pendências C:->E:; versionado)
 ├── visitas.json                # Visitas do dia geradas do relatório WhatsApp (opcional; ou colar no terminal)
 ├── ignorados.json              # Pastas que nunca devem ser sincronizadas (criado ao usar [I])
 ├── self-check.ps1              # Verificação rápida das regras de nome, idempotência e ignorados
@@ -259,11 +261,32 @@ Antes de tocar no disco, o script abre uma lista navegável com `[Console]::Read
 
 ### Etapa 2 — Triagem inteligente de fotos + GPS
 
-Depois de criar as pastas, o script indexa as fotos do Syncthing (`$SyncthingFotos`), filtra pelo dia exato (`data`), agrupa por bloco de horário (intervalo de 40 min) e **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `Q` sair). Para cada lote copiado, extrai o GPS EXIF e gera `coordenadas_gps.txt`.
+Depois de criar as pastas, o script indexa as fotos das raízes (`$SyncthingFotos`: Organizada C: → E: → `Camera` bruta, dedup por nome), filtra pelo dia exato (`data`), agrupa por bloco de horário (intervalo de 40 min) e **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `Q` sair). Para cada lote copiado, extrai o GPS EXIF e gera `coordenadas_gps.txt`.
 
 ### Auditoria permanente (`runs\`)
 
 Ao finalizar, grava `runs\AAAA-MM-DD_HH-mm-ss__TRIAGEM__triagem-campo.json` (+ `.txt` legível) com: origens `.txt`/`.json` no Drive, caminhos exatos das fotos copiadas do Syncthing, pastas criadas no OneDrive, coordenadas GPS e contagens. **`runs\` nunca é apagado** (diferente de `logs\`). Auditoria textual também em `triagem-log.txt`.
+
+## 📸 Organização da Câmera por Visita (`organizar-camera.ps1`)
+
+Move as fotos da câmera bruta para **fora da pasta sincronizada**, agrupadas por **visita técnica** (tempo + raio GPS), com fluxo **campo (C:) vs. casa (disco externo E:)**. Arquitetura completa em [`.plan/Triagem-de-Fotos-no-Campo.md`](.plan/Triagem-de-Fotos-no-Campo.md) (seção 12).
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1" -SemMenu -WhatIf  # simulação (não move nada)
+pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1"                   # interativo (menu campo/casa)
+pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1" -SemMenu -SincronizarExterno -MoverParaExterno
+```
+
+- **Origem**: `C:\Users\randomacesso\Sync\Camera_Celular\Camera` · **Destino local**: `C:\Users\randomacesso\Sync\Camera_Celular_Organizada\` (irmã da sincronizada, não volta ao celular) · **Externo**: `<E|outra>:\Sync\Camera_Celular_Organizada\` (prioriza `E:`; `-DriveExterno "E"` força a letra).
+- **Hierarquia**: visitas (clusters **≥ 3 fotos**) em `<AAAA>\<MM>\<DD>_visita\` — ou `<DD>_visita_1`, `<DD>_visita_2`… quando há 2+ visitas no mesmo dia (ordem cronológica); avulsas (1–2 fotos) na raiz `<AAAA>\<MM>\`; vídeos (`VID_*`/`.mp4/.mov/.3gp/.mkv`) em `Videos\<AAAA>\<MM>\`.
+- **Regra de cluster** (Haversine em metros): `(Δt ≤ 40 min E d ≤ 500 m)` OU `(mesmo dia E Δt ≤ 120 min E d ≤ 300 m)` OU `(sem GPS E Δt ≤ 40 min)`. Data/hora: EXIF `DateTimeOriginal` → nome `AAAAMMDD_HHMMSS` → `LastWriteTime`.
+- **`_visita.json`** em cada pasta de visita: `data`, `indice_visita`, `pasta_nome`, `hora_inicio`/`hora_fim`, `duracao_minutos`, `qtd_fotos`, `fotos_com_gps`, `lat_media`/`lon_media`, `raio_metros`, `google_maps_url` e `arquivos` (nome, hora, lat, lon, modelo_camera, tamanho_bytes).
+- **`estado-camera.json`** (versionado): `ultima_execucao`, `ultima_foto_processada`, totais organizados no C:, `ultima_sincronizacao_e` e pendências C:→E: (arquivos/bytes). A cada execução o script mostra fotos/vídeos novos, visitas agrupadas e GB pendentes de sync.
+- **Cenário A — disco externo ausente (campo)**: avisa e pergunta se organiza localmente no C: (direto com `-SemMenu`), movendo da `Camera\` (libera o celular via Syncthing).
+- **Cenário B — disco presente (casa)**: menu TUI (↑/↓ + Enter): [1] organizar novas + sincronizar tudo ao E: (pergunta manter cópia no C: ou **mover** para liberar o SSD), [2] só organizar no C:, [3] só sincronizar/mover o que já está no C:, [4] cancelar.
+- **Parâmetros**: `-SemMenu`, `-SincronizarExterno`, `-MoverParaExterno`, `-DriveExterno "E"`, `-Copiar` (copia em vez de mover da `Camera\`), `-WhatIf`. Manifesto por execução: `runs\AAAA-MM-DD_HH-mm-ss__CAMERA__organizar-camera.json`.
+- **Integração**: o `triagem-campo.ps1` lê a pasta Organizada (C: e E:) antes da `Camera\` bruta, com dedup por nome — fotos recém-chegadas ainda não organizadas continuam sendo encontradas.
+- **Baseline real (17/11/2026)**: 1.368 fotos (96,2% com GPS, Xiaomi POCO F4 GT) + 1 vídeo → **254 clusters / 137 visitas / 117 avulsos**; o `-WhatIf` reproduz esses números.
 
 ## 🧹 Isolamento e Limpeza de Prints (`limpar-screenshots.ps1`)
 

@@ -1,0 +1,25 @@
+{
+  "script": "limpar-screenshots",
+  "modo": "organizacao_por_aplicativo",
+  "timestamp": "2026-11-17_13-57-31",
+  "origem": "C:\\Users\\randomacesso\\Sync\\Camera_Celular",
+  "destino": "C:\\Users\\randomacesso\\Sync\\Camera_Celular\\Screenshots",
+  "manter_lockscreen": false,
+  "totais": {
+    "movidos": 0,
+    "bytes_movidos": 0,
+    "lockscreen_removidos": 0,
+    "bytes_lockscreen_removidos": 0
+  },
+  "por_aplicativo": [],
+  "lockscreen_removidos": [],
+  "arquivos": [],
+  "pastas_vazias_removidas": [
+    "Tse",
+    "Tippingcanoe",
+    "Shopee",
+    "Miui",
+    "Maxatacadista",
+    "Inovatech"
+  ]
+}

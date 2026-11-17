@@ -29,7 +29,13 @@ $ErrorActionPreference = 'Continue'
 
 # ================= CONFIGURACOES =================
 $OneDriveBase           = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando"
-$SyncthingFotos         = "C:\Users\randomacesso\Sync\Camera_Celular\Camera" # <-- fotos da câmera (IMG_AAAAMMDD_HHMMSS)
+# Raízes de fotos em ordem de prioridade (dedup por nome: a 1ª raiz vence):
+# 1. organizada por visita (organizar-camera.ps1)  2. disco externo  3. bruta Syncthing (recém-chegadas)
+$SyncthingFotos         = @(
+    "C:\Users\randomacesso\Sync\Camera_Celular_Organizada",
+    "E:\Sync\Camera_Celular_Organizada",
+    "C:\Users\randomacesso\Sync\Camera_Celular\Camera"
+)
 $InboxBase              = "G:\Meu Drive"                                   # <-- Google Drive pessoal (inbox espelhada)
 $IntervaloVisitaMinutos = 40
 $ExtensoesFoto          = @(".jpg", ".jpeg", ".png", ".heic", ".mp4")
@@ -673,8 +679,9 @@ Write-Host "`n=== ETAPA 1: CRIANDO PASTAS / GRAVANDO RELATORIOS NO ONEDRIVE ==="
 $PastasCriadas = Invoke-CriarPastasEArquivar -RelatorioDias $RelatorioDias
 
 # ================= ETAPA 2: INDEXAR FOTOS DO SYNCTHING =================
-if (-not (Test-Path $SyncthingFotos)) {
-    Write-Host "`n[AVISO] Pasta do Syncthing nao encontrada: $SyncthingFotos" -ForegroundColor Yellow
+$RaizesExistentes = @($SyncthingFotos | Where-Object { Test-Path $_ })
+if ($RaizesExistentes.Count -eq 0) {
+    Write-Host "`n[AVISO] Nenhuma raiz de fotos encontrada: $($SyncthingFotos -join ' | ')" -ForegroundColor Yellow
     Write-Host "Pastas/relatorios ja gravados. Ajuste `$SyncthingFotos para triar as fotos." -ForegroundColor Yellow
     Write-TriagemRun -Registro ([PSCustomObject]@{
         timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); origens = $RunOrigens
@@ -685,7 +692,14 @@ if (-not (Test-Path $SyncthingFotos)) {
 }
 
 Write-Host "`n=== ETAPA 2: LENDO DATA/HORA E GPS DAS FOTOS DO SYNCTHING ===" -ForegroundColor Cyan
-$ArquivosFoto = @(Get-ChildItem -Path $SyncthingFotos -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() })
+# Varre as raízes em ordem (Organizada C: -> E: -> Camera bruta), recursivo, com dedup por nome
+$ArquivosFoto = [System.Collections.Generic.List[object]]::new()
+$NomesVistos = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($raiz in $RaizesExistentes) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $raiz -Recurse -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() -and $_.Name -notlike '.*' -and $_.Name -notlike '~syncthing~*' })) {
+        if ($NomesVistos.Add($f.Name)) { $ArquivosFoto.Add($f) }
+    }
+}
 $TotalArquivos = $ArquivosFoto.Count; $Idx = 0
 $TodasFotos = @($ArquivosFoto | ForEach-Object {
     $Idx++

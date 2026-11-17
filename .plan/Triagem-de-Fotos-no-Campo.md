@@ -180,7 +180,7 @@ A data exibida é a **data de busca das fotos** (`data`); o nome final já vem c
 
 ## 7. Etapa 2 — Triagem de fotos do Syncthing + GPS
 
-1. **Indexação** (`Get-FotoMetadados`): varre `$SyncthingFotos`, resolve data/hora (EXIF → nome → `LastWriteTime`) e GPS de cada arquivo, com `Write-Progress`. Extensões: `.jpg .jpeg .png .heic .mp4`.
+1. **Indexação** (`Get-FotoMetadados`): varre as **raízes de `$SyncthingFotos` em ordem de prioridade** — `Camera_Celular_Organizada` (C:) → `E:\Sync\Camera_Celular_Organizada` (se conectado) → `Camera_Celular\Camera` (bruta) — recursivo, **dedup por nome** (1ª raiz vence; ignora ocultos/`~syncthing~*`), resolve data/hora (EXIF → nome → `LastWriteTime`) e GPS de cada arquivo, com `Write-Progress`. Extensões: `.jpg .jpeg .png .heic .mp4`. Assim a triagem consome as visitas já organizadas pelo `organizar-camera.ps1` (seção 12) e ainda alcança fotos recém-chegadas não movidas.
 2. **Filtro por dia**: para cada dia do JSON, seleciona as fotos cujo `DataStr` == `data` (`AAAA-MM-DD`).
 3. **Agrupamento por janela de deslocamento**: fotos do mesmo dia são cortadas em lotes quando o intervalo entre fotos consecutivas passa de **40 min** (`$IntervaloVisitaMinutos`). O deslocamento entre sítios abre essa janela naturalmente → cada visita vira um lote único.
 4. **Pré-sugestão + distribuição por TAG** (`Get-SugestaoTag`): cruza o **horário médio do lote** com `hora_inicio`/`hora_fim` (quando não nulos) ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Se **um único** produtor casa, destaca a sugestão e **`Enter` aceita**; senão digita-se `A`/`B`/`C` (lote inteiro), `P` pula, `I` foto a foto, `Q` encerra.
@@ -299,3 +299,55 @@ Na validação real (17/11/2026, com o layout antigo `2026\01..11` já populado 
 - **Critério 4 conservador** — só resolução exata + EXIF vazio + nome não `IMG_*`; na dúvida, o arquivo fica na origem.
 - **Ocultos e `.trashed-*` ignorados** — pastas de sistema/Syncthing (`.stfolder`, `.android`, `.deleteRecord`, `.globalTrash`, `.tmfs`) e a lixeira `.trashed-*` não entram na migração nem na contagem.
 - **Confirmação `APAGAR`** — remoção é destrutiva e espelhada no celular; nunca automática.
+
+---
+
+## 12. Organização da câmera por visita (`organizar-camera.ps1`)
+
+**Status**: implementado em `organizar-camera.ps1` (raiz do projeto). Complementa a triagem: a câmera bruta (`Camera\`) é **movida** para fora da pasta sincronizada, agrupada por visita técnica (tempo + raio GPS), com fluxo campo (C:) vs. casa (disco externo). O celular permanece o "negativo" (Syncthing *enviar apenas*).
+
+### 12.1 Caminhos e hierarquia
+
+| Item | Valor |
+|---|---|
+| `$OrigemCamera` | `C:\Users\randomacesso\Sync\Camera_Celular\Camera` |
+| `$DestinoLocal` | `C:\Users\randomacesso\Sync\Camera_Celular_Organizada` (irmã da sincronizada; não volta ao Android) |
+| Externo | `<E|outra>:\Sync\Camera_Celular_Organizada` — `Get-DriveExterno` prioriza `E:`, senão outra unidade secundária conectada; `-DriveExterno "E"` força |
+| Visitas (≥3 fotos) | `<AAAA>\<MM>\<DD>_visita\` (1 visita no dia) ou `<DD>_visita_1`, `<DD>_visita_2`… (2+, cronológico) |
+| Avulsas (1–2 fotos) | raiz `<AAAA>\<MM>\` |
+| Vídeos (`VID_*`, `.mp4/.mov/.3gp/.mkv/.avi`) | `Videos\<AAAA>\<MM>\` |
+
+### 12.2 Regra de cluster (validada no acervo real)
+
+Ordena por data/hora (EXIF `DateTimeOriginal` → nome `AAAAMMDD_HHMMSS` → `LastWriteTime`) e agrupa consecutivas quando:
+`(Δt ≤ 40 min E d ≤ 500 m)` **OU** `(mesmo dia E Δt ≤ 120 min E d ≤ 300 m — mesma propriedade)` **OU** `(sem GPS E Δt ≤ 40 min)`. Distância = **Haversine** em metros (`Get-DistanciaMetros`). GPS lido dos tags EXIF 2/1 (lat) e 4/3 (lon) via `Get-GpsCoord` (racionais little-endian; **nunca** nomear função `Gps` — o alias `gps` do PowerShell aponta para `Get-Process` e quebra a chamada silenciosamente).
+
+**Baseline real (17/11/2026)**: 1.368 fotos `.jpg` (8,79 GB; 100% `DateTimeOriginal`; **96,2% GPS**; Xiaomi 21121210G / POCO F4 GT) + 1 vídeo `VID_20261105_184822.mp4` (242 MB) → **254 clusters / 137 visitas (1.199 fotos) / 117 avulsos (169 fotos)**; 33 dias com 2+ visitas. O `-SemMenu -WhatIf` reproduz exatamente esses números (regressão no `self-check.ps1`).
+
+### 12.3 `_visita.json` (por pasta de visita)
+
+`data` (`AAAA-MM-DD`), `indice_visita`, `pasta_nome`, `hora_inicio`/`hora_fim` (`HH:mm:ss`), `duracao_minutos`, `qtd_fotos`, `fotos_com_gps`, `lat_media`/`lon_media` (6 decimais), `raio_metros` (máx. distância ao centroide, 1 decimal), `google_maps_url` (`https://www.google.com/maps?q=lat,lon` — **invariante**, não usa cultura pt-BR) e `arquivos[]` com `nome`, `hora`, `lat`, `lon`, `modelo_camera`, `tamanho_bytes`. Consumido pela triagem como metadado de visita (auditoria/QGIS/laudo).
+
+### 12.4 Estado persistente e fluxo campo/casa
+
+`estado-camera.json` (raiz do projeto, **versionado**): `ultima_execucao`, `ultima_foto_processada`, `total_fotos_organizadas_c`, `total_videos_organizados_c`, `ultima_sincronizacao_e`, `pendentes_sync_e` (`arquivos`, `bytes` — calculado por caminho relativo C: vs. E:). Atualizado a cada execução real; manifesto detalhado em `runs\AAAA-MM-DD_HH-mm-ss__CAMERA__organizar-camera.json`.
+
+Ao iniciar: mostra fotos/vídeos **novos** desde a última execução, clusters/visitas/avulsos simulados e **pendentes C:→E: (arquivos/GB)**. Então:
+- **Cenário A — externo AUSENTE (campo)**: avisa; pergunta se organiza localmente no C: (ou direto com `-SemMenu`); `Move-Item` da `Camera\` (libera o celular via Syncthing).
+- **Cenário B — externo PRESENTE (casa)**: menu TUI ↑/↓+Enter: **[1]** organizar novas no C: + sincronizar tudo (novas+pendentes) ao E: — pergunta manter cópia no C: ou **mover** (libera o SSD C:, que tem ~10 GB livres); **[2]** só organizar no C:; **[3]** só sincronizar/mover o que já está no C:; **[4]** cancelar.
+- Sincronização preserva a árvore relativa (incl. `_visita.json`), pula o que já existe no E:, e no modo mover remove pastas vazias do C: (bottom-up).
+
+**Parâmetros**: `-SemMenu`, `-SincronizarExterno`, `-MoverParaExterno`, `-DriveExterno "E"`, `-Copiar` (copia em vez de mover da `Camera\`; dedup por nome no destino), `-WhatIf` (simulação completa, sem manifesto/estado).
+
+### 12.5 Integração com a triagem
+
+`$SyncthingFotos` no `triagem-campo.ps1` virou array ordenado: **Organizada C: → Organizada E: → Camera bruta**, varredura recursiva com **dedup por nome** (1ª raiz vence). EXIF/GPS preservados no move → `Get-FotoMetadados`, lotes de 40 min, sugestão de TAG e `coordenadas_gps.txt` funcionam sem mudança. Fotos recém-chegadas ainda na `Camera\` continuam sendo encontradas.
+
+### 12.6 Decisões congeladas
+
+- **Mover por padrão** — C: tem ~10 GB livres; mover no mesmo volume é instantâneo e não consome espaço. O celular é o negativo (enviar apenas); a pasta organizada fica fora do sync. `-Copiar` é a exceção explícita.
+- **Fora da pasta sincronizada** — `Camera_Celular_Organizada` é irmã de `Camera_Celular`; nada volta ao Android nem gera "local changes" no Syncthing.
+- **`DD_visita` / `DD_visita_n`** — nomenclatura explícita de visita; sufixo numérico só quando o dia tem 2+ visitas (33 dias no acervo), em ordem cronológica.
+- **Verbos aprovados** — `Get-GpsCoord`, `Get-DistanciaMetros`, `Get-ClustersVisita`… (lição do bug do alias `gps`).
+- **URL Maps invariante** — coordenadas com ponto decimal, independente da cultura pt-BR da máquina.
+- **Estado versionado** — `estado-camera.json` no Git para auditoria de pendências campo/casa; `runs\` permanente como nos demais scripts.

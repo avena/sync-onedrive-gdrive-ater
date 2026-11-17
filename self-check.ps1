@@ -29,6 +29,15 @@ foreach ($F in $AstS.FindAll({ $args[0] -is [System.Management.Automation.Langua
     . ([scriptblock]::Create($F.Extent.Text))
 }
 
+# Camera: valida sintaxe e carrega só as funções (sem executar o fluxo campo/casa)
+$ScriptCamera = Join-Path $PSScriptRoot 'organizar-camera.ps1'
+$ErrosC = $null
+$AstC = [System.Management.Automation.Language.Parser]::ParseFile($ScriptCamera, [ref]$null, [ref]$ErrosC)
+if ($ErrosC.Count) { throw "Sintaxe camera: $($ErrosC[0].Message)" }
+foreach ($F in $AstC.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    . ([scriptblock]::Create($F.Extent.Text))
+}
+
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("ater_check_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
@@ -114,6 +123,63 @@ try {
     if ($vazias -notcontains 'AppVazio') { throw 'screenshots: pasta de app vazia não removida' }
     if ($vazias -notcontains '2026\01' -or $vazias -notcontains '2026') { throw 'screenshots: pastas legadas vazias não removidas (bottom-up)' }
     if (-not (Test-Path (Join-Path $DestinoBase 'ComPrint\a.jpg'))) { throw 'screenshots: removeu pasta que tinha arquivo' }
+
+    # 1k) organizar-camera: GPS, Haversine, clusters, nomenclatura, _visita.json, videos, estado, colisao
+    $ExtensoesFoto = @('.jpg', '.jpeg', '.png')
+    $mockImg = [PSCustomObject]@{ PropertyItems = @(
+        [PSCustomObject]@{ Id = 2; Value = [byte[]]@(23,0,0,0,1,0,0,0, 30,0,0,0,1,0,0,0, 0,0,0,0,1,0,0,0) }
+        [PSCustomObject]@{ Id = 1; Value = [byte[]]@(83,0) }
+        [PSCustomObject]@{ Id = 4; Value = [byte[]]@(47,0,0,0,1,0,0,0, 15,0,0,0,1,0,0,0, 0,0,0,0,1,0,0,0) }
+        [PSCustomObject]@{ Id = 3; Value = [byte[]]@(87,0) }
+    ) }
+    if ([math]::Abs((Get-GpsCoord $mockImg 2 1) - (-23.5)) -gt 1e-9) { throw 'camera: GPS latitude falhou' }
+    if ([math]::Abs((Get-GpsCoord $mockImg 4 3) - (-47.25)) -gt 1e-9) { throw 'camera: GPS longitude falhou' }
+    if ([math]::Abs((Get-DistanciaMetros 0 0 0 1) - 111195) -gt 100) { throw 'camera: Haversine falhou' }
+    if ((Get-DistanciaMetros -23.5 -47.25 -23.5 -47.25) -ne 0) { throw 'camera: Haversine ponto igual falhou' }
+    function New-FotoTeste([string]$nome, [datetime]$dt, $lat, $lon) {
+        [PSCustomObject]@{ Arquivo = [PSCustomObject]@{ Name = $nome; Length = 1000 }; DataHora = $dt; Lat = $lat; Lon = $lon; TemGps = ($null -ne $lat -and $null -ne $lon); Modelo = 'Xiaomi 21121210G' }
+    }
+    $ft = @(
+        (New-FotoTeste 'IMG_20260402_090000.jpg' ([datetime]'2026-04-02 09:00:00') -23.5 -47.25),
+        (New-FotoTeste 'IMG_20260402_091000.jpg' ([datetime]'2026-04-02 09:10:00') -23.5 -47.25),
+        (New-FotoTeste 'IMG_20260402_092000.jpg' ([datetime]'2026-04-02 09:20:00') -23.5 -47.25),
+        (New-FotoTeste 'IMG_20260402_093000.jpg' ([datetime]'2026-04-02 09:30:00') -23.5 -47.25),
+        (New-FotoTeste 'IMG_20260402_113000.jpg' ([datetime]'2026-04-02 11:30:00') -23.509 -47.25),
+        (New-FotoTeste 'IMG_20260402_113500.jpg' ([datetime]'2026-04-02 11:35:00') -23.509 -47.25),
+        (New-FotoTeste 'IMG_20260403_090000.jpg' ([datetime]'2026-04-03 09:00:00') $null $null),
+        (New-FotoTeste 'IMG_20260403_093000.jpg' ([datetime]'2026-04-03 09:30:00') $null $null),
+        (New-FotoTeste 'IMG_20260403_094000.jpg' ([datetime]'2026-04-03 09:40:00') $null $null),
+        (New-FotoTeste 'IMG_20260402_130000.jpg' ([datetime]'2026-04-02 13:00:00') -23.52 -47.25),
+        (New-FotoTeste 'IMG_20260402_130500.jpg' ([datetime]'2026-04-02 13:05:00') -23.52 -47.25),
+        (New-FotoTeste 'IMG_20260402_131000.jpg' ([datetime]'2026-04-02 13:10:00') -23.52 -47.25)
+    )
+    $clT = Get-ClustersVisita -Fotos $ft
+    if ($clT.Count -ne 4) { throw "camera: clusters esperados 4, obtidos $($clT.Count)" }
+    $visT = Set-NomesVisita -Clusters $clT
+    if ($visT.Count -ne 3) { throw "camera: visitas esperadas 3, obtidas $($visT.Count)" }
+    if ($visT[0].PastaNome -ne '02_visita_1' -or $visT[1].PastaNome -ne '02_visita_2') { throw 'camera: nomenclatura DD_visita_1/_2 falhou' }
+    if ($visT[2].PastaNome -ne '03_visita') { throw 'camera: nomenclatura DD_visita (unica) falhou' }
+    $vj = New-VisitaJson -Cluster $visT[0] -PastaNome $visT[0].PastaNome -Indice $visT[0].IndiceVisita
+    if ($vj.data -ne '2026-04-02' -or $vj.qtd_fotos -ne 4 -or $vj.fotos_com_gps -ne 4) { throw 'camera: _visita.json campos falhou' }
+    if ($vj.hora_inicio -ne '09:00:00' -or $vj.hora_fim -ne '09:30:00' -or $vj.arquivos.Count -ne 4) { throw 'camera: _visita.json horarios/arquivos falhou' }
+    if ($vj.google_maps_url -notmatch 'maps\?q=-23\.5,-47\.25') { throw 'camera: _visita.json URL Maps (invariante) falhou' }
+    $imgT = New-Item -ItemType File -Path (Join-Path $Tmp 'IMG_20260402_090000.jpg')
+    $miT = Get-MetadadosCamera -Arquivo $imgT
+    if ($miT.DataHora.ToString('yyyy-MM-dd HH:mm') -ne '2026-04-02 09:00') { throw 'camera: fallback data pelo nome falhou' }
+    $vidT = New-Item -ItemType File -Path (Join-Path $Tmp 'VID_20261105_184822.mp4')
+    $mvT = Get-MetadadosCamera -Arquivo $vidT
+    if ($mvT.DataHora.ToString('yyyy-MM-dd HH:mm:ss') -ne '2026-11-05 18:48:22') { throw 'camera: data de video pelo nome falhou' }
+    if ((Join-Path 'Videos' $mvT.DataHora.ToString('yyyy\\MM')) -ne 'Videos\2026\11') { throw 'camera: destino Videos\AAAA\MM falhou' }
+    $EstadoFile = Join-Path $Tmp 'estado-camera.json'
+    $est0 = Get-EstadoCamera
+    if ($est0.total_fotos_organizadas_c -ne 0) { throw 'camera: estado inicial falhou' }
+    $est0.ultima_execucao = '2026-11-17_14-00-00'; $est0.total_fotos_organizadas_c = 42
+    Save-EstadoCamera -Estado $est0
+    $est1 = Get-EstadoCamera
+    if ($est1.total_fotos_organizadas_c -ne 42 -or $est1.ultima_execucao -ne '2026-11-17_14-00-00') { throw 'camera: estado roundtrip falhou' }
+    $colP = Join-Path $Tmp 'colisao'; New-Item -ItemType Directory -Path $colP -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $colP 'IMG_20260402_090000.jpg') | Out-Null
+    if ((Split-Path (Get-NomeSemColisaoCamera -Pasta $colP -Arquivo $imgT) -Leaf) -ne 'IMG_20260402_090000__2.jpg') { throw 'camera: colisao __2 falhou' }
 
     # 2) caminho de destino montado
     $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-RICARDO ISHIDA' })[0]
