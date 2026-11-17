@@ -162,6 +162,7 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ├── triagem-campo.ps1           # Triagem de fotos Syncthing -> OneDrive (revisão interativa + GPS)
 ├── limpar-screenshots.ps1      # Organiza prints por app em Screenshots\<App> + remove lockscreen + limpeza por período
 ├── organizar-camera.ps1        # Organiza fotos da câmera por visita (tempo+GPS) em Camera_Celular_Organizada + sync C:/E:
+├── organizar-audios.ps1        # Move áudios soltos do GravadorDeConversa (Syncthing) para pastas AAAA-MM
 ├── estado-camera.json          # Estado persistente do organizar-camera (totais, pendências C:->E:; versionado)
 ├── visitas.json                # Visitas do dia geradas do relatório WhatsApp (opcional; ou colar no terminal)
 ├── ignorados.json              # Pastas que nunca devem ser sincronizadas (criado ao usar [I])
@@ -287,6 +288,20 @@ pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1" -SemMenu -Sincroniza
 - **Parâmetros**: `-SemMenu`, `-SincronizarExterno`, `-MoverParaExterno`, `-DriveExterno "E"`, `-Copiar` (copia em vez de mover da `Camera\`), `-WhatIf`. Manifesto por execução: `runs\AAAA-MM-DD_HH-mm-ss__CAMERA__organizar-camera.json`.
 - **Integração**: o `triagem-campo.ps1` lê a pasta Organizada (C: e E:) antes da `Camera\` bruta, com dedup por nome — fotos recém-chegadas ainda não organizadas continuam sendo encontradas.
 - **Baseline real (17/11/2026)**: 1.368 fotos (96,2% com GPS, Xiaomi POCO F4 GT) + 1 vídeo → **254 clusters / 137 visitas / 117 avulsos**; o `-WhatIf` reproduz esses números.
+
+## 🎙️ Organização dos Áudios do Gravador (`organizar-audios.ps1`)
+
+Move os áudios soltos na raiz de `C:\Users\randomacesso\Sync\GravadorDeConversa` (Syncthing bidirecional com o celular HyperOS) para subpastas **`AAAA-MM`** dentro da própria pasta — a reorganização reflete automaticamente na pasta `GRAVADORDECONVERSA` do celular.
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File ".\organizar-audios.ps1" -WhatIf   # simulação (não move nada)
+pwsh -ExecutionPolicy Bypass -File ".\organizar-audios.ps1"           # organiza de verdade
+```
+
+- **Escopo**: só `.m4a`/`.mp3`/`.aac`/`.wav` **soltos na raiz**; subpastas existentes, ocultos do Syncthing (`.stfolder`, `.stignore`) e temporários (`~syncthing~*`, `*.tmp`, `.syncthing.*`) são ignorados.
+- **Mês**: extraído do nome do Gravador Xiaomi (`3 de nov., 11.39 ...m4a` → `11`); **ano**: `LastWriteTime`. Nome fora do padrão (renomeado manualmente) → fallback completo pelo `LastWriteTime`.
+- **Sem sobrescrita**: se já existir arquivo de mesmo nome em `AAAA-MM`, o áudio é mantido na raiz e um aviso é exibido.
+- Compatível com Windows PowerShell 5.1 e PowerShell 7; pode ser agendado no Agendador de Tarefas como o `start-sync.ps1`.
 
 ## 🧹 Isolamento e Limpeza de Prints (`limpar-screenshots.ps1`)
 
