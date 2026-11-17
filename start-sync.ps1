@@ -4,9 +4,49 @@
 .DESCRIPTION
     Copia e atualiza pastas de produtores por Município e Atividade sem apagar
     arquivos adicionados por terceiros no Google Drive.
+
+.EXAMPLE
+    .\start-sync.ps1           # menu interativo
+    .\start-sync.ps1 -Auto     # execução silenciosa (Agendador de Tarefas)
 #>
 param(
     [switch]$Auto # Permite rodar sem menu pelo Agendador de Tarefas
+)
+
+# ================= CONFIGURAÇÕES DO PROJETO =================
+$OrigemBase  = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando"
+$NomeRemoto  = "gdrive_saconsult"
+$RemotoDrive = "${NomeRemoto}:VALE DO RIBEIRA/FERNANDO"
+$LogDir      = "$PSScriptRoot\logs"
+$NomeTarefa  = "Sync_ATER_OneDrive_GDrive"
+$ScriptPath  = $PSCommandPath
+$Timestamp   = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+$LogFile     = "$LogDir\sync_$Timestamp.log"
+
+$Cidades = @(
+    "Barra do Turvo",
+    "Cananéia",
+    "Jacupiranga",
+    "Juquiá",
+    "Pariquera-Açu",
+    "Registro"
+)
+
+$Atividades = @(
+    "ATIVIDADE INDIVIDUAL 1",
+    "ATIVIDADE INDIVIDUAL 2",
+    "ATIVIDADE INDIVIDUAL 3"
+)
+
+# copy + --update: copia novos e atualiza mais recentes; NUNCA apaga nada no destino.
+$RcloneFlags = @(
+    "--update",
+    "--transfers=4",
+    "--checkers=8",
+    "--drive-shared-with-me",
+    "--stats-one-line",
+    "--stats=2s",
+    "-v"
 )
 
 # ================= VERIFICAÇÃO E INSTALAÇÃO DO RCLONE =================
@@ -59,7 +99,7 @@ function Test-AndInstallRclone {
             winget install --id Rclone.Rclone --source winget --accept-source-agreements --accept-package-agreements
         }
 
-        # Recarrega PATH da máquina + usuário (teste abaixo cobre shims/links)
+        # Recarrega PATH da máquina + usuário (o teste abaixo cobre shims/links)
         $env:PATH = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
 
         if (Test-RcloneAvailable) {
@@ -74,52 +114,75 @@ function Test-AndInstallRclone {
     }
 }
 
-# Checagem sempre roda (inclusive -Auto), mas sem prompt no Agendador
-if (-not (Test-AndInstallRclone -Silent:$Auto)) {
-    if (-not $Auto) { Read-Host "Pressione Enter para sair" }
-    exit 1
+function Test-RemoteConfigurado {
+    return ((rclone listremotes 2>$null) -contains "${NomeRemoto}:")
 }
 
-# ================= CONFIGURAÇÕES DO PROJETO =================
-$OrigemBase  = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando"
-$RemotoDrive = "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO"
-$LogDir      = "$PSScriptRoot\logs"
-$Timestamp   = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-$LogFile     = "$LogDir\sync_$Timestamp.log"
+# ================= AÇÕES AUXILIARES =================
+function Show-PastasLocais {
+    Write-Host "`nPastas encontradas em $OrigemBase" -ForegroundColor Cyan
+    $Total = 0
+    foreach ($Cidade in $Cidades) {
+        foreach ($Atividade in $Atividades) {
+            if (Test-Path (Join-Path $OrigemBase "$Cidade\$Atividade")) {
+                $Total++
+                Write-Host "  [OK] $Cidade | $Atividade" -ForegroundColor Green
+            }
+        }
+    }
+    if ($Total -eq 0) { Write-Host "  Nenhuma pasta Cidade\Atividade encontrada." -ForegroundColor Yellow }
+    else { Write-Host "`n  $Total pasta(s) prontas para sincronizar." -ForegroundColor Cyan }
+}
 
-# Mapeamento: Cidades e Atividades ativas
-# O script cruza cada Cidade com cada Atividade automaticamente se a pasta existir no seu OneDrive
-$Cidades = @(
-    "Barra do Turvo",
-    "Cananéia",
-    "Jacupiranga",
-    "Juquiá",
-    "Pariquera-Açu",
-    "Registro"
-)
+function Show-UltimoLog {
+    $Ultimo = Get-ChildItem $LogDir -Filter *.log -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $Ultimo) { Write-Host "`nNenhum log gerado ainda." -ForegroundColor Yellow; return }
+    Write-Host "`n=== $($Ultimo.Name) (últimas 30 linhas) ===" -ForegroundColor Cyan
+    Get-Content $Ultimo.FullName -Tail 30
+}
 
-$Atividades = @(
-    "ATIVIDADE INDIVIDUAL 1",
-    "ATIVIDADE INDIVIDUAL 2",
-    "ATIVIDADE INDIVIDUAL 3"
-)
+function Register-SyncTask {
+    $Acao = New-ScheduledTaskAction -Execute "pwsh.exe" `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Auto"
+    $Gatilho = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes 5) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+    $Config = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -MultipleInstances IgnoreNew
 
-# Flags do Rclone:
-# copy + --update: copia novos e atualiza mais recentes; NUNCA apaga nada no destino.
-# --drive-shared-with-me: acessa a pasta compartilhada com fernandoavena.saconsult.
-$RcloneFlags = @(
-    "--update",
-    "--transfers=4",
-    "--checkers=8",
-    "--drive-shared-with-me",
-    "--stats-one-line",
-    "--stats=2s",
-    "-v"
-)
+    Register-ScheduledTask -TaskName $NomeTarefa -Action $Acao -Trigger $Gatilho -Settings $Config -Force `
+        -Description "Copia pastas de produtores do OneDrive para o Google Drive SA Consult a cada 5 min" | Out-Null
+    Write-Host "[OK] Tarefa '$NomeTarefa' agendada a cada 5 minutos." -ForegroundColor Green
+    Write-Host "     (pwsh.exe necessário — instale com: winget install Microsoft.PowerShell)" -ForegroundColor Gray
+}
 
-# ================= FUNÇÃO DE EXECUÇÃO =================
+function Unregister-SyncTask {
+    if (Get-ScheduledTask -TaskName $NomeTarefa -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $NomeTarefa -Confirm:$false
+        Write-Host "[OK] Agendamento removido." -ForegroundColor Green
+    } else {
+        Write-Host "Nenhum agendamento com o nome '$NomeTarefa'." -ForegroundColor Yellow
+    }
+}
+
+function Update-RcloneBinario {
+    if (Get-Command scoop -ErrorAction SilentlyContinue) {
+        scoop update rclone
+    } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget upgrade --id Rclone.Rclone --source winget --accept-source-agreements --accept-package-agreements
+    } else {
+        Write-Host "Nenhum gerenciador de pacotes disponível." -ForegroundColor Red
+    }
+    Write-Host "Versão atual: $(rclone version | Select-Object -First 1)" -ForegroundColor Cyan
+}
+
+# ================= FUNÇÃO DE SINCRONIZAÇÃO =================
 function Invoke-AterSync {
-    param([bool]$Simulacao = $false)
+    param(
+        [bool]$Simulacao = $false,
+        [string]$ApenasCidade = ""   # vazio = todas as cidades
+    )
 
     if (-not (Test-Path $OrigemBase)) {
         Write-Host "`n[ERRO] Pasta base do OneDrive não encontrada:" -ForegroundColor Red
@@ -136,10 +199,9 @@ function Invoke-AterSync {
         Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | Remove-Item -Force
 
     # Pré-checagem: remote configurado? Evita 15 erros CRITICAL idênticos
-    $NomeRemoto = ($RemotoDrive -split ':')[0]
-    if ((rclone listremotes) -notcontains "$NomeRemoto`:") {
+    if (-not (Test-RemoteConfigurado)) {
         Write-Host "`n[ERRO] Remote '$NomeRemoto' não configurado no rclone." -ForegroundColor Red
-        Write-Host "       Use a opção [5] do menu (rclone config) para configurar." -ForegroundColor Yellow
+        Write-Host "       Use a opção [9] do menu (Configurar rclone)." -ForegroundColor Yellow
         return $false
     }
 
@@ -152,7 +214,8 @@ function Invoke-AterSync {
     $ParesEncontrados = 0
     $ParesComFalha    = 0
 
-    foreach ($Cidade in $Cidades) {
+    $ListaCidades = if ($ApenasCidade) { @($ApenasCidade) } else { $Cidades }
+    foreach ($Cidade in $ListaCidades) {
         foreach ($Atividade in $Atividades) {
             # Caminho no OneDrive: ...\Fernando\<Cidade>\<Atividade>
             $CaminhoLocal = Join-Path -Path $OrigemBase -ChildPath "$Cidade\$Atividade"
@@ -195,12 +258,23 @@ function Invoke-AterSync {
 
 # ================= EXECUÇÃO AUTOMÁTICA (AGENDADOR) =================
 if ($Auto) {
+    # Checagem sempre roda, mas sem prompt (Agendador não tem console)
+    if (-not (Test-AndInstallRclone -Silent)) { exit 1 }
     # Exit code importa: Agendador marca a tarefa como falha se retornar != 0
     if (Invoke-AterSync -Simulacao $false) { exit 0 } else { exit 1 }
 }
 
-# ================= MENU INTERATIVO (EXECUÇÃO MANUAL) =================
+# ================= CHECAGEM INICIAL (MODO MANUAL) =================
+if (-not (Test-AndInstallRclone)) {
+    Read-Host "Pressione Enter para sair"
+    exit 1
+}
+
+# ================= MENU INTERATIVO =================
 do {
+    $Agendado = Get-ScheduledTask -TaskName $NomeTarefa -ErrorAction SilentlyContinue
+    $StatusAgenda = if ($Agendado) { "ATIVO (5 min)" } else { "desativado" }
+
     Clear-Host
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host "   SYNC ATER - ONEDRIVE -> GOOGLE DRIVE (SA CONSULTORIA)    " -ForegroundColor White
@@ -208,14 +282,21 @@ do {
     Write-Host " Origem : $OrigemBase" -ForegroundColor Gray
     Write-Host " Destino: $RemotoDrive" -ForegroundColor Gray
     Write-Host " Modo   : COPY (--update) | Não apaga arquivos do Drive" -ForegroundColor DarkGreen
+    Write-Host " Agendar: $StatusAgenda" -ForegroundColor DarkGreen
     Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host " [1] Verificar alterações (Dry-Run / Simulação segura)" -ForegroundColor Yellow
-    Write-Host " [2] Sincronizar AGORA (Enviar novos e atualizados)" -ForegroundColor Green
-    Write-Host " [3] Abrir pasta de Logs" -ForegroundColor White
-    Write-Host " [4] Testar conexão com Google Drive (SA Consult)" -ForegroundColor White
+    Write-Host " [1] Verificar alterações (Dry-Run / simulação segura)" -ForegroundColor Yellow
+    Write-Host " [2] Sincronizar AGORA (todas as cidades)" -ForegroundColor Green
+    Write-Host " [3] Sincronizar UMA cidade específica" -ForegroundColor Green
+    Write-Host " [4] Mostrar pastas locais encontradas" -ForegroundColor White
+    Write-Host " [5] Ver últimas linhas do log" -ForegroundColor White
+    Write-Host " [6] Abrir pasta de Logs" -ForegroundColor White
+    Write-Host " [7] Testar conexão com Google Drive" -ForegroundColor White
     Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host " [5] Configurar rclone (rclone config)" -ForegroundColor Magenta
-    Write-Host " [6] Ver status do rclone (versão e remotes)" -ForegroundColor Magenta
+    Write-Host " [8] Testar rclone (versão e remotes)" -ForegroundColor Magenta
+    Write-Host " [9] Configurar rclone (rclone config)" -ForegroundColor Magenta
+    Write-Host "[10] Agendar tarefa (a cada 5 min)" -ForegroundColor Magenta
+    Write-Host "[11] Remover agendamento" -ForegroundColor Magenta
+    Write-Host "[12] Atualizar rclone" -ForegroundColor Magenta
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 
@@ -231,21 +312,37 @@ do {
             Read-Host "Pressione Enter para voltar ao menu"
         }
         "3" {
-            if (Test-Path $LogDir) { Invoke-Item $LogDir }
-            else { Write-Host "Pasta de logs ainda vazia." -ForegroundColor Yellow; Start-Sleep 2 }
+            Write-Host "`nCidades disponíveis:" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $Cidades.Count; $i++) { Write-Host " [$($i+1)] $($Cidades[$i])" -ForegroundColor White }
+            $Escolha = Read-Host "Número da cidade (Enter cancela)"
+            if ($Escolha -match '^\d+$' -and [int]$Escolha -ge 1 -and [int]$Escolha -le $Cidades.Count) {
+                Invoke-AterSync -Simulacao $false -ApenasCidade $Cidades[[int]$Escolha - 1]
+            } else {
+                Write-Host "Cancelado." -ForegroundColor Yellow
+            }
+            Read-Host "Pressione Enter para voltar ao menu"
         }
         "4" {
-            Write-Host "`nListando pastas dentro de VALE DO RIBEIRA/FERNANDO..." -ForegroundColor Cyan
-            rclone lsd "$RemotoDrive" --drive-shared-with-me
+            Show-PastasLocais
             Read-Host "`nPressione Enter para voltar ao menu"
         }
         "5" {
-            Write-Host "`nAbrindo configurador do rclone..." -ForegroundColor Cyan
-            Write-Host "Siga os passos: n → name: gdrive_saconsult → drive → scope: 1 → y (browser) → conta da consultoria → n → y → q" -ForegroundColor Gray
-            rclone config
+            Show-UltimoLog
             Read-Host "`nPressione Enter para voltar ao menu"
         }
         "6" {
+            if (Test-Path $LogDir) { Invoke-Item $LogDir }
+            else { Write-Host "Pasta de logs ainda vazia." -ForegroundColor Yellow; Start-Sleep 2 }
+        }
+        "7" {
+            Write-Host "`nListando pastas dentro de VALE DO RIBEIRA/FERNANDO..." -ForegroundColor Cyan
+            rclone lsd "$RemotoDrive" --drive-shared-with-me
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "`n[ERRO] Falha ao acessar o Drive. Verifique a configuração (opção [8]/[9])." -ForegroundColor Red
+            }
+            Read-Host "`nPressione Enter para voltar ao menu"
+        }
+        "8" {
             Write-Host "`n=== STATUS DO RCLONE ===" -ForegroundColor Cyan
             rclone version
             Write-Host "`n--- Remotes configurados ---" -ForegroundColor Cyan
@@ -253,6 +350,24 @@ do {
             Write-Host "`n--- Config (tokens ocultos) ---" -ForegroundColor Cyan
             rclone config redacted
             Read-Host "`nPressione Enter para voltar ao menu"
+        }
+        "9" {
+            Write-Host "`nAbrindo configurador do rclone..." -ForegroundColor Cyan
+            Write-Host "Passos: n | name: $NomeRemoto | drive | scope: 1 | y (navegador) | conta da consultoria | n | y | q" -ForegroundColor Gray
+            rclone config
+            Read-Host "`nPressione Enter para voltar ao menu"
+        }
+        "10" {
+            Register-SyncTask
+            Read-Host "Pressione Enter para voltar ao menu"
+        }
+        "11" {
+            Unregister-SyncTask
+            Read-Host "Pressione Enter para voltar ao menu"
+        }
+        "12" {
+            Update-RcloneBinario
+            Read-Host "Pressione Enter para voltar ao menu"
         }
         "0" { Write-Host "Saindo..." -ForegroundColor Gray }
         default { Write-Host "Opção inválida." -ForegroundColor Red; Start-Sleep 1 }

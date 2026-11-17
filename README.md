@@ -89,12 +89,20 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 | Opção | Ação |
 |-------|------|
 | `[1]` | **Dry-Run** — Simula sincronização sem alterar nada (seguro para conferir) |
-| `[2]` | **Sincronizar AGORA** — Executa `rclone copy --update` real |
-| `[3]` | **Abrir pasta de Logs** — Abre `logs\` no Explorer |
-| `[4]` | **Testar conexão** — Lista pastas no `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
-| `[5]` | **Configurar rclone** — Abre `rclone config` com o passo a passo |
-| `[6]` | **Status do rclone** — Versão, remotes e config redigida (tokens ocultos) |
+| `[2]` | **Sincronizar AGORA** — Executa `rclone copy --update` em todas as cidades |
+| `[3]` | **Sincronizar UMA cidade** — Escolhe uma cidade da lista e sincroniza só ela |
+| `[4]` | **Mostrar pastas locais** — Lista quais pares Cidade\Atividade existem no OneDrive |
+| `[5]` | **Ver últimas linhas do log** — Mostra as 30 últimas linhas do log mais recente |
+| `[6]` | **Abrir pasta de Logs** — Abre `logs\` no Explorer |
+| `[7]` | **Testar conexão** — Lista pastas no `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
+| `[8]` | **Testar rclone** — Versão, remotes e config redigida (tokens ocultos) |
+| `[9]` | **Configurar rclone** — Abre `rclone config` com o passo a passo |
+| `[10]` | **Agendar tarefa** — Registra/atualiza a tarefa do Agendador (5 min, `-Auto`) |
+| `[11]` | **Remover agendamento** — Desregistra a tarefa do Agendador |
+| `[12]` | **Atualizar rclone** — `scoop update rclone` (ou `winget upgrade`) |
 | `[0]` | Sair |
+
+> O cabeçalho do menu mostra se o agendamento está **ATIVO (5 min)** ou desativado.
 
 ### Comportamento automático do script
 
@@ -118,7 +126,7 @@ $Cidades = @("Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera
 $Atividades = @("ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3")
 ```
 
-> **Atenção**: Nomes devem bater **exatamente** (acentos, maiúsculas) com as pastas no OneDrive e no Google Drive. Use a opção `[4]` para confirmar.
+> **Atenção**: Nomes devem bater **exatamente** (acentos, maiúsculas) com as pastas no OneDrive e no Google Drive. Use `[4]` (pastas locais) e `[7]` (pastas no Drive) para confirmar.
 
 ## 🛡️ Segurança e Boas Práticas
 
@@ -151,7 +159,7 @@ pwsh -ExecutionPolicy Bypass -File ".\start-sync.ps1"
 | `rclone: command not found` | Reinicie o terminal após instalar; o script recarrega PATH automaticamente |
 | `Access denied` no OneDrive | Verifique se `$OrigemBase` existe e OneDrive está sincronizado |
 | `Failed to get token` | Rode `rclone config` novamente e refaça login com a conta da consultoria |
-| Nomes com acento não batem | Use opção `[4]` para ver nomes exatos no Drive; ajuste arrays `$Cidades`/`$Atividades` |
+| Nomes com acento não batem | Use `[7]` para ver os nomes exatos no Drive; ajuste os arrays `$Cidades`/`$Atividades` |
 | Script não executa (política) | Use `-ExecutionPolicy Bypass` ou `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
 
 ## 📝 Licença
