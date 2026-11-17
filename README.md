@@ -111,6 +111,9 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 - **Remote não configurado** → aborta na hora com mensagem clara (não gera 15 erros no log)
 - **Exit code** → `0` se tudo ok, `1` se alguma pasta falhar (o Agendador mostra "falhou")
 - **Retenção de logs** → apaga automaticamente `.log` com mais de 7 dias
+- **Um log por execução** → `sync_AAAA-MM-DD_HH-mm-ss.log` (não por sessão do menu)
+- **Rede instável** → `--retries=3 --retries-sleep=10s --contimeout=30s` (retry nativo do rclone)
+- **Agendamento** → usa `pwsh.exe` se existir, senão cai para `powershell.exe`
 
 ## 🔧 Configurações Importantes (edite no `start-sync.ps1`)
 

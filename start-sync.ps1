@@ -17,11 +17,9 @@ param(
 $OrigemBase  = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando"
 $NomeRemoto  = "gdrive_saconsult"
 $RemotoDrive = "${NomeRemoto}:VALE DO RIBEIRA/FERNANDO"
-$LogDir      = "$PSScriptRoot\logs"
+$LogDir      = Join-Path $PSScriptRoot 'logs'
 $NomeTarefa  = "Sync_ATER_OneDrive_GDrive"
 $ScriptPath  = $PSCommandPath
-$Timestamp   = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-$LogFile     = "$LogDir\sync_$Timestamp.log"
 
 $Cidades = @(
     "Barra do Turvo",
@@ -46,6 +44,9 @@ $RcloneFlags = @(
     "--drive-shared-with-me",
     "--stats-one-line",
     "--stats=2s",
+    "--retries=3",          # retry nativo em falhas transitórias (internet de campo)
+    "--retries-sleep=10s",
+    "--contimeout=30s",
     "-v"
 )
 
@@ -115,7 +116,8 @@ function Test-AndInstallRclone {
 }
 
 function Test-RemoteConfigurado {
-    return ((rclone listremotes 2>$null) -contains "${NomeRemoto}:")
+    # --quiet evita NOTICE de "config file not found" poluindo o console/stdout
+    return ((rclone listremotes --quiet) -contains "${NomeRemoto}:")
 }
 
 # ================= AÇÕES AUXILIARES =================
@@ -143,26 +145,37 @@ function Show-UltimoLog {
 }
 
 function Register-SyncTask {
-    $Acao = New-ScheduledTaskAction -Execute "pwsh.exe" `
-        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Auto"
-    $Gatilho = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes 5) `
-        -RepetitionDuration (New-TimeSpan -Days 3650)
-    $Config = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -StartWhenAvailable -MultipleInstances IgnoreNew
+    # pwsh.exe se existir; senão usa o Windows PowerShell (não falha por ausência do PS7)
+    $Exe = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
 
-    Register-ScheduledTask -TaskName $NomeTarefa -Action $Acao -Trigger $Gatilho -Settings $Config -Force `
-        -Description "Copia pastas de produtores do OneDrive para o Google Drive SA Consult a cada 5 min" | Out-Null
-    Write-Host "[OK] Tarefa '$NomeTarefa' agendada a cada 5 minutos." -ForegroundColor Green
-    Write-Host "     (pwsh.exe necessário — instale com: winget install Microsoft.PowerShell)" -ForegroundColor Gray
+    try {
+        $Acao = New-ScheduledTaskAction -Execute $Exe `
+            -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -Auto"
+        $Gatilho = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+            -RepetitionInterval (New-TimeSpan -Minutes 5) `
+            -RepetitionDuration (New-TimeSpan -Days 3650)
+        $Config = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable -MultipleInstances IgnoreNew
+
+        Register-ScheduledTask -TaskName $NomeTarefa -Action $Acao -Trigger $Gatilho -Settings $Config -Force `
+            -Description "Copia pastas de produtores do OneDrive para o Google Drive SA Consult a cada 5 min" | Out-Null
+
+        Write-Host "[OK] Tarefa '$NomeTarefa' agendada a cada 5 min usando $Exe." -ForegroundColor Green
+    } catch {
+        Write-Host "[ERRO] Falha ao agendar: $_" -ForegroundColor Red
+    }
 }
 
 function Unregister-SyncTask {
-    if (Get-ScheduledTask -TaskName $NomeTarefa -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $NomeTarefa -Confirm:$false
-        Write-Host "[OK] Agendamento removido." -ForegroundColor Green
-    } else {
+    if (-not (Get-ScheduledTask -TaskName $NomeTarefa -ErrorAction SilentlyContinue)) {
         Write-Host "Nenhum agendamento com o nome '$NomeTarefa'." -ForegroundColor Yellow
+        return
+    }
+    try {
+        Unregister-ScheduledTask -TaskName $NomeTarefa -Confirm:$false -ErrorAction Stop
+        Write-Host "[OK] Agendamento removido." -ForegroundColor Green
+    } catch {
+        Write-Host "[ERRO] Falha ao remover: $_" -ForegroundColor Red
     }
 }
 
@@ -204,6 +217,9 @@ function Invoke-AterSync {
         Write-Host "       Use a opção [9] do menu (Configurar rclone)." -ForegroundColor Yellow
         return $false
     }
+
+    # Log por execução (não por sessão): cada sync no menu gera seu próprio arquivo
+    $LogFile = Join-Path $LogDir ("sync_{0}.log" -f (Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'))
 
     $ModoTexto = if ($Simulacao) { "SIMULAÇÃO (DRY-RUN - NADA SERÁ ALTERADO)" } else { "SINCRONIZAÇÃO REAL (COPY)" }
     Write-Host "`n============================================================" -ForegroundColor Cyan
