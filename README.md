@@ -169,7 +169,7 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ├── self-check.ps1              # Verificação rápida das regras de nome, idempotência e ignorados
 ├── triagem-log.txt             # Log de auditoria da triagem (gerado em runtime)
 ├── logs\                       # Logs técnicos do rclone (giram a cada 7 dias)
-├── runs\                       # Manifestos de auditoria PERMANENTES (nunca apagar; versionados)
+├── runs\                       # Manifestos de auditoria PERMANENTES (nunca apagar; locais, fora do Git)
 │   ├── ...__TRIAGEM__triagem-campo.json / .txt   # origens, fotos copiadas, pastas, GPS
 │   ├── ...__SCREENSHOTS__limpar-screenshots.json # prints isolados (origem -> destino, critério, bytes)
 │   └── ...__<ESCOPO>__start-sync.json / .txt     # caminho local + URL Drive das pastas atualizadas
@@ -187,16 +187,16 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 
 ## 🏷️ Padronização do nome no Google Drive
 
-As pastas no OneDrive costumam vir com prefixo de data ou número (`2026-11-RICARDO ISHIDA`, `03 - Rafael Souza`). No destino o prefixo é removido por regex e o sufixo ` - RESUMO` é acrescentado **de forma idempotente**:
+As pastas no OneDrive costumam vir com prefixo de data ou número (`2026-11-JOAO DA SILVA`, `03 - Pedro Oliveira`). No destino o prefixo é removido por regex e o sufixo ` - RESUMO` é acrescentado **de forma idempotente**:
 
 ```powershell
 $Limpo = $NomeLocal -replace '^(\d{4}-\d{2}(-\d{2})?-|\d+\s*-\s*)', ''
 # Se já termina em "- RESUMO" (case-insensitive), preserva; senão acrescenta.
 if ($Limpo -match '\s*-\s*RESUMO$') { $NomeDrive = $Limpo } else { $NomeDrive = "$Limpo - RESUMO" }
 
-# 2026-11-RICARDO ISHIDA                 ->  RICARDO ISHIDA - RESUMO
-# 2026-11-12-OSMAR - ITAPITANGUI - RESUMO ->  OSMAR - ITAPITANGUI - RESUMO  (dia completo, sem duplicar)
-# 03 - Rafael Souza                      ->  Rafael Souza - RESUMO
+# 2026-11-JOAO DA SILVA                 ->  JOAO DA SILVA - RESUMO
+# 2026-11-12-CARLOS - ITAPITANGUI - RESUMO ->  CARLOS - ITAPITANGUI - RESUMO  (dia completo, sem duplicar)
+# 03 - Pedro Oliveira                      ->  Pedro Oliveira - RESUMO
 ```
 
 **Regra idempotente para `- RESUMO`**: pastas antigas (sem o sufixo) recebem ` - RESUMO`; pastas já criadas pelo `triagem-campo.ps1` (que já vêm com ` - RESUMO`) são preservadas como estão — **nunca** vira `- RESUMO - RESUMO`. A verificação é case-insensitive (`- RESUMO`, `-RESUMO`, `- resumo` contam como já presentes).
@@ -209,7 +209,7 @@ Ao final de `[2]`, `[3]`, `[4]` ou `-Auto`, o script identifica **apenas** as pa
 
 ```
   [4] Jacupiranga  >  ATIVIDADE INDIVIDUAL 1
-   [ ] 2026-11-RICARDO ISHIDA -> RICARDO ISHIDA - RESUMO  (14 arq.)
+   [ ] 2026-11-JOAO DA SILVA -> JOAO DA SILVA - RESUMO  (14 arq.)
 ```
 
 > Pastas sem prefixo viram `<nome> - RESUMO` do mesmo jeito.
@@ -232,8 +232,8 @@ O script varre `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\` (ignorando `_process
 Cada `produtor_pasta` é normalizado para o prefixo de **dia completo** e sufixo ` - RESUMO` (case-insensitive, idempotente):
 
 ```
-OSMAR - ITAPITANGUI (data 2026-11-12)  ->  2026-11-12-OSMAR - ITAPITANGUI - RESUMO
-2026-11-MARIA DAS GRAÇAS               ->  2026-11-12-MARIA DAS GRAÇAS - RESUMO
+CARLOS - ITAPITANGUI (data 2026-11-12)  ->  2026-11-12-CARLOS - ITAPITANGUI - RESUMO
+2026-11-ANA BEATRIZ               ->  2026-11-12-ANA BEATRIZ - RESUMO
 ```
 
 O `start-sync.ps1` remove esse prefixo (dia completo ou ano-mês) ao montar o nome no Drive, então a pasta local e o destino ficam consistentes sem duplicar o sufixo.
@@ -330,11 +330,11 @@ O arquivo guarda **só o caminho relativo completo** até a pasta do produtor:
 
 ```json
 [
-  "Jacupiranga\\ATIVIDADE INDIVIDUAL 1\\2026-11-RICARDO ISHIDA"
+  "Jacupiranga\\ATIVIDADE INDIVIDUAL 1\\2026-11-JOAO DA SILVA"
 ]
 ```
 
-**Regra crítica**: o nome do produtor isolado nunca é usado. Ignorar `RICARDO ISHIDA` na `ATIVIDADE INDIVIDUAL 1` não afeta a `ATIVIDADE INDIVIDUAL 2` — cada atividade tem sua própria entrada. O arquivo é consultado por `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`, que pulam as entradas listadas e informam quantas foram ignoradas no resumo.
+**Regra crítica**: o nome do produtor isolado nunca é usado. Ignorar `JOAO DA SILVA` na `ATIVIDADE INDIVIDUAL 1` não afeta a `ATIVIDADE INDIVIDUAL 2` — cada atividade tem sua própria entrada. O arquivo é consultado por `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`, que pulam as entradas listadas e informam quantas foram ignoradas no resumo.
 
 ## ⚙️ Menu Interativo
 
@@ -377,7 +377,7 @@ Cada produtor mostra a contagem de arquivos e como o nome ficará no Drive (`loc
 
 O `rclone` roda sempre com `--log-file`, porque o `-v` escreve em **stderr** — no Windows PowerShell 5.1 isso aparece como erro vermelho (`NativeCommandError`) se capturado pelo pipeline. Em vez disso:
 
-- Cada pasta de produtor imprime `[3/15] Registro | ATIVIDADE INDIVIDUAL 1 | 2026-11-RICARDO ISHIDA` antes de rodar.
+- Cada pasta de produtor imprime `[3/15] Registro | ATIVIDADE INDIVIDUAL 1 | 2026-11-JOAO DA SILVA` antes de rodar.
 - Depois de cada pasta: `-> 12 novo(s), 3 atualizado(s)` (ou `-> N arquivo(s) pendente(s)` no dry-run), lido das linhas novas do log.
 - No fim do dry-run: **`--- RESUMO DO DRY-RUN ---`** com o total ou `[OK] Tudo sincronizado! Nenhuma alteração pendente encontrada.`
 - Teclas pendentes são drenadas (`Clear-KeyBuffer`) antes do `Read-Host`, então o Enter responde na hora.
@@ -433,7 +433,7 @@ rclone version
 rclone lsd gdrive_saconsult: --drive-shared-with-me
 
 # 3. Dry-run de uma pasta específica (nome já padronizado no destino)
-rclone copy "C:\...\Fernando\Registro\ATIVIDADE INDIVIDUAL 1\2026-11-RICARDO ISHIDA" "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/ATIVIDADE INDIVIDUAL 1/Registro/RICARDO ISHIDA - RESUMO" --update --drive-shared-with-me --dry-run -v
+rclone copy "C:\...\Fernando\Registro\ATIVIDADE INDIVIDUAL 1\2026-11-JOAO DA SILVA" "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/ATIVIDADE INDIVIDUAL 1/Registro/JOAO DA SILVA - RESUMO" --update --drive-shared-with-me --dry-run -v
 
 # 4. Roda script em modo simulação (opção 1 do menu)
 pwsh -ExecutionPolicy Bypass -File ".\start-sync.ps1"
@@ -474,4 +474,7 @@ Contexto técnico obrigatório:
 
 ## 📝 Licença
 
-Uso interno — SA Consultoria.
+**Código fechado — Todos os Direitos Reservados.** Propriedade exclusiva de
+Fernando Avena / SA Consultoria; uso restrito e interno. É proibida a cópia,
+redistribuição, modificação ou uso comercial sem autorização expressa por
+escrito. Veja [LICENSE](LICENSE).

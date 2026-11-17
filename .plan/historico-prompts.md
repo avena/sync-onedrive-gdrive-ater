@@ -40,7 +40,7 @@ Regras obrigatórias de normalização:
    "Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro".
 4. Normalize a atividade em caixa alta: "ATIVIDADE INDIVIDUAL 1".."ATIVIDADE INDIVIDUAL 6" ou "PROJETO PRODUTIVO".
 5. Formate "produtor_pasta" em CAIXA ALTA no padrão "AAAA-MM-NOME DO PRODUTOR"
-   (substituindo "/" por " - " se houver localidade, ex: "2026-11-OSMAR - ITAPITANGUI").
+   (substituindo "/" por " - " se houver localidade, ex: "2026-11-CARLOS - ITAPITANGUI").
    O sufixo " - RESUMO" é acrescentado automaticamente pelo script.
 6. Retorne APENAS o bloco JSON puro, sem texto adicional, pronto para copiar e colar.
 ```

@@ -129,7 +129,7 @@ function Test-RemoteConfigurado {
 # ================= NOMES NO DESTINO E IGNORADOS =================
 $IgnoradosFile = Join-Path $PSScriptRoot 'ignorados.json'
 
-# "2026-11-RICARDO ISHIDA" e "03 - Rafael Souza" -> "RICARDO ISHIDA - RESUMO"
+# "2026-11-JOAO DA SILVA" e "03 - Pedro Oliveira" -> "JOAO DA SILVA - RESUMO"
 # Idempotente: se o nome limpo ja termina em "- RESUMO" (case-insensitive), preserva
 # sem duplicar (pastas criadas pelo triagem-campo.ps1 ja vem com o sufixo).
 function Get-NomeResumo {
@@ -251,14 +251,15 @@ function Invoke-RcloneCopy {
         [string]$LogFile
     )
 
-    $Args = @("copy", $Local, $Nuvem) + $RcloneFlags + @("--log-file=$LogFile")
-    if ($Simulacao) { $Args += "--dry-run" }
+    # $Args e variavel automatica do PowerShell — nunca atribuir a ela
+    $RcloneArgs = @("copy", $Local, $Nuvem) + $RcloneFlags + @("--log-file=$LogFile")
+    if ($Simulacao) { $RcloneArgs += "--dry-run" }
 
     # Marca onde o log estava para ler depois só as linhas desta execução
     $LinhasAntes = 0
     if (Test-Path $LogFile) { $LinhasAntes = @(Get-Content $LogFile -Encoding UTF8).Count }
 
-    & rclone @Args
+    & rclone @RcloneArgs
     $Codigo = $LASTEXITCODE
 
     $Novas = @()
@@ -289,7 +290,7 @@ function Show-ProdutoresSelector {
             Produtor    = $P.Produtor
             NomeDrive   = $P.NomeDrive
             Relativo    = $P.Relativo
-            QtdArquivos = @(Get-ChildItem -Path $P.Local -File -Recurse -ErrorAction SilentlyContinue).Count
+            QtdArquivos = @(Get-ChildItem -LiteralPath $P.Local -File -Recurse -ErrorAction SilentlyContinue).Count
             Local       = $P.Local
             Nuvem       = $P.Nuvem
         })

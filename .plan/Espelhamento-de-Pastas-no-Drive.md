@@ -58,9 +58,9 @@ return "$Limpo - RESUMO"                                           # pasta antig
 - Remove o prefixo de data/número do início (`2026-11-…` ou `03 - …`).
 - **Regra idempotente**: se o nome limpo já termina em `\s*-\s*RESUMO$` (case-insensitive), preserva como está — **sem duplicar** para `- RESUMO - RESUMO`. Pastas criadas pelo `triagem-campo.ps1` já vêm com ` - RESUMO`; pastas antigas recebem o sufixo.
 - Exemplos:
-  - `2026-11-RICARDO ISHIDA` → `RICARDO ISHIDA - RESUMO`
-  - `03 - Rafael Souza` → `Rafael Souza - RESUMO`
-  - `2026-11-OSMAR - ITAPITANGUI - RESUMO` → `OSMAR - ITAPITANGUI - RESUMO` (sem duplicar)
+  - `2026-11-JOAO DA SILVA` → `JOAO DA SILVA - RESUMO`
+  - `03 - Pedro Oliveira` → `Pedro Oliveira - RESUMO`
+  - `2026-11-CARLOS - ITAPITANGUI - RESUMO` → `CARLOS - ITAPITANGUI - RESUMO` (sem duplicar)
 - Vale para **todas** as rotinas: `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`.
 
 ---
@@ -87,7 +87,7 @@ Função `Show-ProdutoresSelector` — TUI nativa com `[Console]::ReadKey($true)
 
 - Guarda **só o caminho relativo completo** `Cidade\Atividade\NomePastaProdutor` (nunca o nome isolado do produtor — a mesma pessoa pode existir em outra atividade).
 - Consultado por `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`, que pulam as entradas e informam quantas foram ignoradas.
-- Exemplo: `["Jacupiranga\\ATIVIDADE INDIVIDUAL 1\\2026-11-RICARDO ISHIDA"]`.
+- Exemplo: `["Jacupiranga\\ATIVIDADE INDIVIDUAL 1\\2026-11-JOAO DA SILVA"]`.
 
 ---
 
