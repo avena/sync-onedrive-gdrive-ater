@@ -94,8 +94,8 @@ Um objeto por dia, com as visitas e uma **tag** para digitar no terminal.
     "data": "2026-11-12",
     "mes_prefixo": "2026-11",
     "visitas": [
-      { "tag": "A", "cidade": "Cananéia", "atividade": "ATIVIDADE INDIVIDUAL 2", "produtor_pasta": "2026-11-OSMAR - ITAPITANGUI" },
-      { "tag": "B", "cidade": "Juquiá", "atividade": "ATIVIDADE INDIVIDUAL 2", "produtor_pasta": "2026-11-MARIA DAS GRAÇAS" }
+      { "tag": "A", "cidade": "Cananéia", "atividade": "ATIVIDADE INDIVIDUAL 2", "produtor_pasta": "2026-11-CARLOS - ITAPITANGUI" },
+      { "tag": "B", "cidade": "Juquiá", "atividade": "ATIVIDADE INDIVIDUAL 2", "produtor_pasta": "2026-11-ANA BEATRIZ" }
     ]
   },
   {
@@ -103,7 +103,7 @@ Um objeto por dia, com as visitas e uma **tag** para digitar no terminal.
     "mes_prefixo": "2026-11",
     "visitas": [
       { "tag": "A", "cidade": "Jacupiranga", "atividade": "ATIVIDADE INDIVIDUAL 1", "produtor_pasta": "2026-11-MATILDES E OSVALDO - MORANGABA" },
-      { "tag": "B", "cidade": "Juquiá", "atividade": "ATIVIDADE INDIVIDUAL 1", "produtor_pasta": "2026-11-MARIA DAS GRAÇAS" }
+      { "tag": "B", "cidade": "Juquiá", "atividade": "ATIVIDADE INDIVIDUAL 1", "produtor_pasta": "2026-11-ANA BEATRIZ" }
     ]
   },
   {
@@ -140,7 +140,7 @@ Regras obrigatórias de normalização:
    "Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro".
 4. Normalize a atividade em caixa alta: "ATIVIDADE INDIVIDUAL 1".."ATIVIDADE INDIVIDUAL 6" ou "PROJETO PRODUTIVO".
 5. Formate "produtor_pasta" em CAIXA ALTA no padrão "AAAA-MM-NOME DO PRODUTOR"
-   (substituindo "/" por " - " se houver localidade, ex: "2026-11-OSMAR - ITAPITANGUI").
+   (substituindo "/" por " - " se houver localidade, ex: "2026-11-CARLOS - ITAPITANGUI").
    O sufixo " - RESUMO" é acrescentado automaticamente pelo script.
 6. Retorne APENAS o bloco JSON puro, sem texto adicional, pronto para copiar e colar.
 ```

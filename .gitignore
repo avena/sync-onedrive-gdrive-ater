@@ -13,5 +13,7 @@ rclone.conf
 triagem-log.txt
 visitas.json
 
-# ATENÇÃO: runs/ é PERMANENTE e versionado (manifestos de auditoria .json/.txt).
-# Nenhuma rotina de limpeza apaga runs/. Não ignorar runs/.
+# runs/ é PERMANENTE no disco (nenhuma rotina de limpeza apaga), mas NÃO versionado:
+# manifestos reais podem conter nomes de produtores e coordenadas GPS de clientes.
+runs/*
+!runs/.gitkeep

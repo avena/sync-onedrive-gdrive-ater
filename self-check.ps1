@@ -57,33 +57,48 @@ try {
     $IgnoradosFile = Join-Path $Tmp 'ignorados.json'
 
     foreach ($Ativ in $Atividades) {
-        foreach ($Nome in @('2026-11-RICARDO ISHIDA', '03 - Rafael Souza')) {
+        foreach ($Nome in @('2026-11-JOAO DA SILVA', '03 - Pedro Oliveira')) {
             New-Item -ItemType Directory -Path (Join-Path $OrigemBase "Jacupiranga\$Ativ\$Nome") -Force | Out-Null
         }
     }
 
     # 1) renomeação no destino
-    if ((Get-NomeResumo '2026-11-RICARDO ISHIDA') -ne 'RICARDO ISHIDA - RESUMO') { throw 'renomeação com data falhou' }
-    if ((Get-NomeResumo '03 - Rafael Souza') -ne 'Rafael Souza - RESUMO') { throw 'renomeação com número falhou' }
+    if ((Get-NomeResumo '2026-11-JOAO DA SILVA') -ne 'JOAO DA SILVA - RESUMO') { throw 'renomeação com data falhou' }
+    if ((Get-NomeResumo '03 - Pedro Oliveira') -ne 'Pedro Oliveira - RESUMO') { throw 'renomeação com número falhou' }
     if ((Get-NomeResumo 'SEM PREFIXO') -ne 'SEM PREFIXO - RESUMO') { throw 'renomeação sem prefixo falhou' }
 
     # 1b) idempotência do - RESUMO no start-sync (não duplicar)
-    if ((Get-NomeResumo '2026-11-OSMAR - ITAPITANGUI - RESUMO') -ne 'OSMAR - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO com prefixo de data' }
-    if ((Get-NomeResumo 'OSMAR - ITAPITANGUI - RESUMO') -ne 'OSMAR - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO sem prefixo' }
+    if ((Get-NomeResumo '2026-11-CARLOS - ITAPITANGUI - RESUMO') -ne 'CARLOS - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO com prefixo de data' }
+    if ((Get-NomeResumo 'CARLOS - ITAPITANGUI - RESUMO') -ne 'CARLOS - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO sem prefixo' }
     if ((Get-NomeResumo 'JOAO - resumo') -ne 'JOAO - resumo') { throw 'idempotência case-insensitive falhou' }
 
     # 1c) Add-SufixoResumo da triagem (idempotente, case-insensitive)
-    if ((Add-SufixoResumo '2026-11-OSMAR - ITAPITANGUI') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: sufixo não adicionado' }
-    if ((Add-SufixoResumo '2026-11-OSMAR - ITAPITANGUI - RESUMO') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou RESUMO' }
+    if ((Add-SufixoResumo '2026-11-CARLOS - ITAPITANGUI') -ne '2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: sufixo não adicionado' }
+    if ((Add-SufixoResumo '2026-11-CARLOS - ITAPITANGUI - RESUMO') -ne '2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou RESUMO' }
     if ((Add-SufixoResumo 'NOME - RESUMO') -ne 'NOME - RESUMO') { throw 'triagem: idempotência falhou' }
 
+    # 1c2) Test-CampoSeguro: traversal, caracteres de caminho e ponto/espaco final
+    if (Test-CampoSeguro '..\evil') { throw 'triagem: path traversal deveria ser rejeitado' }
+    if (Test-CampoSeguro 'NOME.') { throw 'triagem: ponto final deveria ser rejeitado' }
+    if (Test-CampoSeguro 'NOME ') { throw 'triagem: espaco final deveria ser rejeitado' }
+    if (-not (Test-CampoSeguro 'CARLOS - ITAPITANGUI')) { throw 'triagem: nome valido rejeitado' }
+
+    # 1c3) inbox com par SO .json (sem .txt): nao pode quebrar no StrictMode
+    $InboxBase = Join-Path $Tmp 'inbox'
+    $leafJson = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Jacupiranga\ATIVIDADE INDIVIDUAL 1\2026-11-17-SO JSON'
+    New-Item -ItemType Directory -Path $leafJson -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $leafJson 'relatorio.json') -Encoding UTF8 -Value '{"metadados":{"data":"2026-11-17","cidade":"Jacupiranga","atividade":"ATIVIDADE INDIVIDUAL 1","produtor_pasta":"SO JSON"}}'
+    $inboxTest = @(& { Set-StrictMode -Version Latest; Get-InboxVisitas })
+    if ($inboxTest.Count -ne 1) { throw 'triagem: par so .json deveria ser detectado' }
+    if ($null -ne $inboxTest[0].SourceTxt) { throw 'triagem: SourceTxt deveria ser nulo sem .txt' }
+
     # 1d) Format-NomePastaProdutor: prefixo AAAA-MM-DD- (dia completo) + sufixo - RESUMO
-    if ((Format-NomePastaProdutor -Nome 'OSMAR - ITAPITANGUI' -Data '2026-11-12') -ne '2026-11-12-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo+sufixo não garantidos' }
-    if ((Format-NomePastaProdutor -Nome '2026-11-12-OSMAR - ITAPITANGUI - RESUMO' -Data '2026-11-12') -ne '2026-11-12-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
-    if ((Format-NomePastaProdutor -Nome '2026-11-OSMAR' -Data '2026-11-12') -ne '2026-11-12-OSMAR - RESUMO') { throw 'triagem: prefixo parcial não normalizado' }
+    if ((Format-NomePastaProdutor -Nome 'CARLOS - ITAPITANGUI' -Data '2026-11-12') -ne '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo+sufixo não garantidos' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-12-CARLOS - ITAPITANGUI - RESUMO' -Data '2026-11-12') -ne '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-CARLOS' -Data '2026-11-12') -ne '2026-11-12-CARLOS - RESUMO') { throw 'triagem: prefixo parcial não normalizado' }
 
     # 1e) start-sync remove prefixo de data COMPLETA (AAAA-MM-DD-) tambem
-    if ((Get-NomeResumo '2026-11-12-OSMAR - ITAPITANGUI - RESUMO') -ne 'OSMAR - ITAPITANGUI - RESUMO') { throw 'start-sync: não removeu dia completo' }
+    if ((Get-NomeResumo '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') -ne 'CARLOS - ITAPITANGUI - RESUMO') { throw 'start-sync: não removeu dia completo' }
 
     # 1f) Remove-YamlHeader / Read-MetadadosTxt
     $yamlTxt = "---`ndata: 2026-11-12`nperiodo: manha`n---`nCorpo do relatorio"
@@ -105,11 +120,11 @@ try {
     if ($null -ne (Get-SugestaoTag -Lote $loteManha -Visitas @($vA, $vC))) { throw 'triagem: sugestão ambígua deveria ser nula' }
 
     # 1h) ConvertTo-RelatorioDias: tags A/B e prefixo de dia completo
-    $va = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'OSMAR'
-    $vb = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'MARIA'
+    $va = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'CARLOS'
+    $vb = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'ANA'
     $dias = ConvertTo-RelatorioDias -Visitas @($va, $vb)
     if ($dias[0].visitas[0].tag -ne 'A') { throw 'triagem: tag A não atribuída' }
-    if ($dias[0].visitas[1].produtor_pasta -ne '2026-11-12-MARIA - RESUMO') { throw 'triagem: nome de pasta não normalizado' }
+    if ($dias[0].visitas[1].produtor_pasta -ne '2026-11-12-ANA - RESUMO') { throw 'triagem: nome de pasta não normalizado' }
 
     # 1i) limpar-screenshots: classificação por app, data e soma segura
     $AppsAmigaveis = @{ 'com.whatsapp' = 'WhatsApp'; 'com.android.chrome' = 'Chrome'; 'com.facebook.katana' = 'Facebook' }
@@ -191,24 +206,24 @@ try {
     if ((Split-Path (Get-NomeSemColisaoCamera -Pasta $colP -Arquivo $imgT) -Leaf) -ne 'IMG_20260402_090000__2.jpg') { throw 'camera: colisao __2 falhou' }
 
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
-    if ((Get-PastaDestinoAudio '3 de nov., 11.39 Valdecir e Elisangela.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
-    if ((Get-PastaDestinoAudio '10 de jan., 08.32 Clodoaldo .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }
+    if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
+    if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }
     if ((Get-PastaDestinoAudio '31 de dez., 23.59.m4a' ([datetime]'2026-12-31 23:59:00')) -ne '2026-12') { throw 'audios: padrao Xiaomi dez falhou' }
     if ((Get-PastaDestinoAudio 'gravacao renomeada.m4a' ([datetime]'2026-05-10 09:00:00')) -ne '2026-05') { throw 'audios: fallback LastWriteTime falhou' }
     if ((Get-PastaDestinoAudio '3 de xyz., 11.39 teste.m4a' ([datetime]'2026-07-03 11:39:00')) -ne '2026-07') { throw 'audios: mes invalido deveria cair no fallback' }
 
     # 2) caminho de destino montado
-    $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-RICARDO ISHIDA' })[0]
-    if ($P.Nuvem -ne 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/Jacupiranga/RICARDO ISHIDA - RESUMO') { throw "nuvem errada: $($P.Nuvem)" }
+    $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-JOAO DA SILVA' })[0]
+    if ($P.Nuvem -ne 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/Jacupiranga/JOAO DA SILVA - RESUMO') { throw "nuvem errada: $($P.Nuvem)" }
 
     # 3) ignorar vale só para aquela atividade, não para o nome do produtor
-    $Alvo = 'Jacupiranga\ATIVIDADE INDIVIDUAL 1\2026-11-RICARDO ISHIDA'
+    $Alvo = 'Jacupiranga\ATIVIDADE INDIVIDUAL 1\2026-11-JOAO DA SILVA'
     Save-Ignorados @($Alvo)
     if (@(Get-Ignorados).Count -ne 1) { throw 'ignorados.json não persistiu' }
     $Ignorados = Get-Ignorados
     $Restantes = @(Get-Produtores | Where-Object { $Ignorados -notcontains $_.Relativo })
     if ($Restantes.Count -ne 3) { throw "esperado 3 pastas sincronizáveis, obtido $($Restantes.Count)" }
-    if (-not ($Restantes.Relativo -contains 'Jacupiranga\ATIVIDADE INDIVIDUAL 2\2026-11-RICARDO ISHIDA')) { throw 'ATIVIDADE INDIVIDUAL 2 foi afetada' }
+    if (-not ($Restantes.Relativo -contains 'Jacupiranga\ATIVIDADE INDIVIDUAL 2\2026-11-JOAO DA SILVA')) { throw 'ATIVIDADE INDIVIDUAL 2 foi afetada' }
 
     # 4) ignorar de novo restaura a pasta
     Save-Ignorados (@(Get-Ignorados) | Where-Object { $_ -ne $Alvo })
