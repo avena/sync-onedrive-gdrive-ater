@@ -59,6 +59,7 @@ function Test-CampoSeguro {
     param([string]$Valor)
     if ([string]::IsNullOrWhiteSpace($Valor)) { return $false }
     if ($Valor -match '\.\.' -or $Valor -match '[/\\:]') { return $false }
+    if ($Valor -match '[\. ]$') { return $false }   # Windows apaga ponto/espaco final -> caminho diverge
     return $true
 }
 
@@ -106,7 +107,7 @@ function Remove-YamlHeader {
 
 function Read-MetadadosJson {
     param([string]$Path)
-    try { $obj = Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+    try { $obj = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
     $meta = Get-PropValue $obj 'metadados'
     if (-not $meta) { $meta = $obj }
     return @{
@@ -122,7 +123,7 @@ function Read-MetadadosJson {
 
 function Read-MetadadosTxt {
     param([string]$Path)
-    $raw = Get-Content -Path $Path -Raw -Encoding UTF8
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
     $campos = @{}
     $body = $raw
     if ($raw -match '(?s)^\s*---\r?\n(.*?)\r?\n---\r?\n?(.*)$') {
@@ -150,19 +151,19 @@ function New-Visita {
 # ================= FONTE PRIMARIA: INBOX ESPELHADA =================
 function Get-InboxVisitas {
     $visitas = [System.Collections.Generic.List[object]]::new()
-    if (-not (Test-Path $InboxBase)) { return , @() }
+    if (-not (Test-Path -LiteralPath $InboxBase)) { return , @() }
 
-    $anos = @(Get-ChildItem -Path $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })
+    $anos = @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })
     foreach ($ano in $anos) {
         $inbox = Join-Path $ano.FullName "_inbox_relatorio_ater"
-        if (-not (Test-Path $inbox)) { continue }
-        $meses = @(Get-ChildItem -Path $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{2}$' })
+        if (-not (Test-Path -LiteralPath $inbox)) { continue }
+        $meses = @(Get-ChildItem -LiteralPath $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{2}$' })
         foreach ($mm in $meses) {
-            foreach ($cid in @(Get-ChildItem -Path $mm.FullName -Directory -ErrorAction SilentlyContinue)) {
-                foreach ($ativ in @(Get-ChildItem -Path $cid.FullName -Directory -ErrorAction SilentlyContinue)) {
-                    foreach ($prod in @(Get-ChildItem -Path $ativ.FullName -Directory -ErrorAction SilentlyContinue)) {
+            foreach ($cid in @(Get-ChildItem -LiteralPath $mm.FullName -Directory -ErrorAction SilentlyContinue)) {
+                foreach ($ativ in @(Get-ChildItem -LiteralPath $cid.FullName -Directory -ErrorAction SilentlyContinue)) {
+                    foreach ($prod in @(Get-ChildItem -LiteralPath $ativ.FullName -Directory -ErrorAction SilentlyContinue)) {
                         $leaf = $prod.Name
-                        $arqs = @(Get-ChildItem -Path $prod.FullName -File -ErrorAction SilentlyContinue |
+                        $arqs = @(Get-ChildItem -LiteralPath $prod.FullName -File -ErrorAction SilentlyContinue |
                             Where-Object { $_.Extension -in @('.txt', '.json') })
                         if ($arqs.Count -eq 0) { continue }
                         $grupos = @($arqs | Group-Object { [System.IO.Path]::GetFileNameWithoutExtension($_.Name) })
@@ -199,9 +200,11 @@ function Get-InboxVisitas {
                             if (-not $data -and $leaf -match '^(\d{4}-\d{2}-\d{2})') { $data = $Matches[1] }
                             if (-not $data) { continue }
 
+                            # par pode ser so .txt ou so .json: $null.FullName quebraria no StrictMode
                             $visitas.Add((New-Visita -Data $data -Periodo $periodo -HoraInicio $hi -HoraFim $hf `
                                 -Cidade $cidade -Atividade $atividade -ProdutorPasta $pasta `
-                                -SourceTxt ($txt.FullName) -SourceJson ($json.FullName) -TxtBody $body `
+                                -SourceTxt $(if ($txt) { $txt.FullName } else { $null }) `
+                                -SourceJson $(if ($json) { $json.FullName } else { $null }) -TxtBody $body `
                                 -OrigemInbox $true -Ano $ano.Name -MM $mm.Name -LeafName $leaf))
                         }
                     }
@@ -339,7 +342,7 @@ function Export-CoordenadasTxt {
     $MediaLat = $null; $MediaLon = $null
 
     $Linhas = [System.Collections.Generic.List[string]]::new()
-    if (-not (Test-Path $TxtPath)) {
+    if (-not (Test-Path -LiteralPath $TxtPath)) {
         $Linhas.Add("==================================================================")
         $Linhas.Add(" GEOLOCALIZACAO DAS FOTOS DE CAMPO - $NomeProdutor")
         $Linhas.Add(" Gerado em: $(Get-Date -Format 'dd/MM/yyyy HH:mm')")
@@ -366,7 +369,7 @@ function Export-CoordenadasTxt {
             $Linhas.Add("$($f.DataStr) $($f.HoraStr) | $($f.Arquivo.Name) -> Sem GPS no EXIF")
         }
     }
-    Add-Content -Path $TxtPath -Value $Linhas -Encoding UTF8
+    Add-Content -LiteralPath $TxtPath -Value $Linhas -Encoding UTF8
     return [PSCustomObject]@{ Count = $FotosComGps.Count; MediaLat = $MediaLat; MediaLon = $MediaLon; TxtPath = $TxtPath }
 }
 
@@ -552,7 +555,7 @@ function Invoke-CriarPastasEArquivar {
             $dest = Join-Path (Join-Path (Join-Path $OneDriveBase $V.cidade) $V.atividade) $V.produtor_pasta
             $V.CaminhoDestino = $dest
 
-            if (-not (Test-Path $dest)) {
+            if (-not (Test-Path -LiteralPath $dest)) {
                 try {
                     New-Item -ItemType Directory -Force -Path $dest | Out-Null
                     Write-Host "  [CRIADA]    $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)" -ForegroundColor Green
@@ -569,12 +572,12 @@ function Invoke-CriarPastasEArquivar {
 
             # Grava .txt limpo (sem YAML) e copia o .json irmao (ambos ficam locais/OneDrive)
             $nomeBase = if ($V.SourceTxt) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceTxt) } else { "relatorio" }
-            if ($V.SourceTxt -and (Test-Path $V.SourceTxt)) {
-                $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -Path $V.SourceTxt -Raw -Encoding UTF8) }
-                Set-Content -Path (Join-Path $dest "$nomeBase.txt") -Value $body -Encoding UTF8
+            if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt)) {
+                $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -LiteralPath $V.SourceTxt -Raw -Encoding UTF8) }
+                Set-Content -LiteralPath (Join-Path $dest "$nomeBase.txt") -Value $body -Encoding UTF8
             }
-            if ($V.SourceJson -and (Test-Path $V.SourceJson)) {
-                Copy-Item -Path $V.SourceJson -Destination (Join-Path $dest ([System.IO.Path]::GetFileName($V.SourceJson))) -Force
+            if ($V.SourceJson -and (Test-Path -LiteralPath $V.SourceJson)) {
+                Copy-Item -LiteralPath $V.SourceJson -Destination (Join-Path $dest ([System.IO.Path]::GetFileName($V.SourceJson))) -Force
             }
 
             # Arquiva originais da inbox em _processados\<MM>\<Cidade>\<Atividade>\<leaf>
@@ -582,8 +585,8 @@ function Invoke-CriarPastasEArquivar {
                 $proc = Join-Path $InboxBase "$($V.Ano)\_inbox_relatorio_ater\_processados\$($V.MM)\$($V.cidade)\$($V.atividade)\$($V.LeafName)"
                 try {
                     New-Item -ItemType Directory -Force -Path $proc | Out-Null
-                    if ($V.SourceTxt -and (Test-Path $V.SourceTxt))   { Move-Item -Path $V.SourceTxt -Destination $proc -Force }
-                    if ($V.SourceJson -and (Test-Path $V.SourceJson)) { Move-Item -Path $V.SourceJson -Destination $proc -Force }
+                    if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt))   { Move-Item -LiteralPath $V.SourceTxt -Destination $proc -Force }
+                    if ($V.SourceJson -and (Test-Path -LiteralPath $V.SourceJson)) { Move-Item -LiteralPath $V.SourceJson -Destination $proc -Force }
                     Write-TriagemLog "ARQUIVADO inbox: $($V.SourceTxt) -> $proc"
                 } catch {
                     Write-Host "  [!] Falha ao arquivar inbox: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -754,9 +757,7 @@ foreach ($Dia in $RelatorioDias) {
             Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER para aceitar" -ForegroundColor Yellow
         }
 
-        $PromptTag = if ($Sugestao) { " TAG (A/B/C), Enter aceita sugestao [$Sugestao], P pula, I individual, Q sair" }
-                     else { " TAG (A/B/C), P/Enter pula, I individual, Q sair (sem sugestao para este lote)" }
-        $Escolha = (Read-Host $PromptTag).Trim().ToUpper()
+        $Escolha = (Read-Host " TAG (A/B/C), Enter aceita sugestao, P pula, I individual, Q sair").Trim().ToUpper()
         if ($Escolha -eq '' -and $Sugestao) { $Escolha = $Sugestao }
 
         if ($Escolha -eq 'Q') { Write-Host "   -> Triagem encerrada." -ForegroundColor Yellow; Write-TriagemLog "ENCERRADO no lote #$NumLote de $($Dia.data)"; $Sair = $true; break }
@@ -770,7 +771,7 @@ foreach ($Dia in $RelatorioDias) {
                 $VisitaAlvo = $Dia.visitas | Where-Object { $_.tag -eq $TagFoto -and $_.CaminhoDestino } | Select-Object -First 1
                 if ($VisitaAlvo) {
                     try {
-                        Copy-Item -Path $FotoItem.Arquivo.FullName -Destination $VisitaAlvo.CaminhoDestino -Force -ErrorAction Stop
+                        Copy-Item -LiteralPath $FotoItem.Arquivo.FullName -Destination $VisitaAlvo.CaminhoDestino -Force -ErrorAction Stop
                         if (-not $PorTag.ContainsKey($TagFoto)) { $PorTag[$TagFoto] = [System.Collections.Generic.List[object]]::new() }
                         $PorTag[$TagFoto].Add($FotoItem)
                         $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaAlvo.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaAlvo.produtor_pasta })
@@ -791,7 +792,7 @@ foreach ($Dia in $RelatorioDias) {
         if ($VisitaEscolhida) {
             foreach ($FotoItem in $Lote) {
                 try {
-                    Copy-Item -Path $FotoItem.Arquivo.FullName -Destination $VisitaEscolhida.CaminhoDestino -Force -ErrorAction Stop
+                    Copy-Item -LiteralPath $FotoItem.Arquivo.FullName -Destination $VisitaEscolhida.CaminhoDestino -Force -ErrorAction Stop
                     $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaEscolhida.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaEscolhida.produtor_pasta })
                     Write-TriagemLog "COPIADA: $($FotoItem.Arquivo.Name) -> $($VisitaEscolhida.produtor_pasta)"
                 } catch { Write-Host "   [!] Falha ao copiar $($FotoItem.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
