@@ -251,14 +251,14 @@ function Invoke-RcloneCopy {
         [string]$LogFile
     )
 
-    $Args = @("copy", $Local, $Nuvem) + $RcloneFlags + @("--log-file=$LogFile")
-    if ($Simulacao) { $Args += "--dry-run" }
+    $RcloneArgs = @("copy", $Local, $Nuvem) + $RcloneFlags + @("--log-file=$LogFile")
+    if ($Simulacao) { $RcloneArgs += "--dry-run" }
 
     # Marca onde o log estava para ler depois só as linhas desta execução
     $LinhasAntes = 0
     if (Test-Path $LogFile) { $LinhasAntes = @(Get-Content $LogFile -Encoding UTF8).Count }
 
-    & rclone @Args
+    & rclone @RcloneArgs
     $Codigo = $LASTEXITCODE
 
     $Novas = @()
@@ -653,6 +653,7 @@ do {
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 
+    Clear-KeyBuffer   # teclas digitadas durante o sync nao vazam para a escolha do menu
     $Opcao = Read-Host "Escolha uma opção"
 
     switch ($Opcao) {

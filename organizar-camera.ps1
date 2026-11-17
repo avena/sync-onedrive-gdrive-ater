@@ -230,11 +230,17 @@ function Get-DriveExterno {
         if (Test-Path "${l}:\") { return $l }
         return $null
     }
-    $unidades = @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -ne 'C' -and $_.Free -ge 0 -and (Test-Path "$($_.Name):\") })
-    $e = $unidades | Where-Object { $_.Name -eq 'E' } | Select-Object -First 1
+    # ponytail: exclui rede e o disco virtual do Google Drive (G:, label "Google Drive",
+    # que reporta Fixed) pelo rotulo; upgrade = checar bus type do dispositivo se surgirem
+    # outros discos virtuais. Sem isso, no campo (E: ausente) o acervo iria para o Drive pessoal.
+    $unidades = @([System.IO.DriveInfo]::GetDrives() | Where-Object {
+        $_.IsReady -and $_.DriveType -in @('Fixed', 'Removable') -and
+        $_.Name -ne 'C:\' -and $_.VolumeLabel -ne 'Google Drive'
+    })
+    $e = $unidades | Where-Object { $_.Name -eq 'E:\' } | Select-Object -First 1
     if ($e) { return 'E' }
     $outra = $unidades | Sort-Object Name | Select-Object -First 1
-    if ($outra) { return $outra.Name }
+    if ($outra) { return $outra.Name.Substring(0, 1) }   # DriveInfo.Name = "E:\" -> letra E
     return $null
 }
 
