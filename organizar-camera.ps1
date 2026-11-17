@@ -482,6 +482,11 @@ if ($organizar) {
 # ---- Sincronizacao C: -> E: ----
 $syncFeitos = $null
 if ($sincronizar -and $drive) {
+    # Guarda anti-perda: MOVER so para disco que JA tem a arvore sincronizada.
+    # Evita mover a biblioteca inteira para um disco errado/recem-conectado.
+    if ($moverE -and -not (Test-Path -LiteralPath $destinoE)) {
+        throw "MOVER bloqueado: $destinoE ainda nao existe em ${drive}:. Na primeira vez sincronize COPIANDO (sem -MoverParaExterno); so mova depois que o ${drive}: ja tiver a copia."
+    }
     $syncFeitos = Invoke-SincronizarExterno -DestinoE $destinoE -Mover $moverE
     $sb = 0; foreach ($x in $syncFeitos) { $sb += $x.bytes }
     $acao = if ($moverE) { 'movidos' } else { 'copiados' }

@@ -444,6 +444,10 @@ pwsh -NoProfile -File ".\self-check.ps1"
 
 # 6. Simula a detecção de prints do Android (não move nada)
 pwsh -NoProfile -File ".\limpar-screenshots.ps1" -WhatIf
+
+# 7. Piloto ponta a ponta com visita "TESTE PILOTO" real (inbox -> triagem -> OneDrive -> Drive)
+pwsh -NoProfile -File ".\piloto-ponta-a-ponta.ps1"          # executa e valida com asserts
+pwsh -NoProfile -File ".\piloto-ponta-a-ponta.ps1" -Limpar  # remove os rastros do teste
 ```
 
 ## 🐛 Troubleshooting
