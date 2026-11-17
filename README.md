@@ -111,22 +111,39 @@ Execute a opção **[9]** no menu do script (ou rode `rclone config` no terminal
 ```
 C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ├── start-sync.ps1              # Script principal (menu + modo -Auto)
+├── triagem-campo.ps1           # Triagem de fotos Syncthing -> OneDrive (revisão interativa + GPS)
+├── visitas.json                # Visitas do dia geradas do relatório WhatsApp (opcional; ou colar no terminal)
 ├── ignorados.json              # Pastas que nunca devem ser sincronizadas (criado ao usar [I])
-├── self-check.ps1              # Verificação rápida das regras de nome e ignorados
+├── self-check.ps1              # Verificação rápida das regras de nome, idempotência e ignorados
+├── triagem-log.txt             # Log de auditoria da triagem (gerado em runtime)
 ├── logs\                       # Logs de cada execução (sync_YYYY-MM-DD_HH-mm-ss.log)
-├── Espelhamento-de-Pastas-no-Drive.md  # Documentação original
+├── .plan\                      # Documentação de planejamento e histórico (oculta/dedicada)
+│   ├── Espelhamento-de-Pastas-no-Drive.md  # Arquitetura final do start-sync.ps1
+│   ├── Triagem-de-Fotos-no-Campo.md        # Arquitetura completa do triagem-campo.ps1
+│   └── historico-prompts.md                # Histórico de prompts (implementação/refatoração/WhatsApp→JSON)
 └── README.md                   # Este arquivo
 ```
 
+> 📚 Toda a documentação de planejamento e o histórico de prompts ficam em [`.plan\`](.plan/):
+> [Espelhamento-de-Pastas-no-Drive.md](.plan/Espelhamento-de-Pastas-no-Drive.md) ·
+> [Triagem-de-Fotos-no-Campo.md](.plan/Triagem-de-Fotos-no-Campo.md) ·
+> [historico-prompts.md](.plan/historico-prompts.md).
+
 ## 🏷️ Padronização do nome no Google Drive
 
-As pastas no OneDrive costumam vir com prefixo de data ou número (`2026-11-RICARDO ISHIDA`, `03 - Rafael Souza`). No destino o prefixo é removido por regex e o sufixo ` - RESUMO` é acrescentado:
+As pastas no OneDrive costumam vir com prefixo de data ou número (`2026-11-RICARDO ISHIDA`, `03 - Rafael Souza`). No destino o prefixo é removido por regex e o sufixo ` - RESUMO` é acrescentado **de forma idempotente**:
 
 ```powershell
-$NomeDrive = $NomeLocal -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''
-# 2026-11-RICARDO ISHIDA  ->  RICARDO ISHIDA - RESUMO
-# 03 - Rafael Souza       ->  Rafael Souza - RESUMO
+$Limpo = $NomeLocal -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''
+# Se já termina em "- RESUMO" (case-insensitive), preserva; senão acrescenta.
+if ($Limpo -match '\s*-\s*RESUMO$') { $NomeDrive = $Limpo } else { $NomeDrive = "$Limpo - RESUMO" }
+
+# 2026-11-RICARDO ISHIDA              ->  RICARDO ISHIDA - RESUMO
+# 03 - Rafael Souza                   ->  Rafael Souza - RESUMO
+# 2026-11-OSMAR - ITAPITANGUI - RESUMO ->  OSMAR - ITAPITANGUI - RESUMO  (sem duplicar)
 ```
+
+**Regra idempotente para `- RESUMO`**: pastas antigas (sem o sufixo) recebem ` - RESUMO`; pastas já criadas pelo `triagem-campo.ps1` (que já vêm com ` - RESUMO`) são preservadas como estão — **nunca** vira `- RESUMO - RESUMO`. A verificação é case-insensitive (`- RESUMO`, `-RESUMO`, `- resumo` contam como já presentes).
 
 Isso vale para **todas** as rotinas: `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`. Cada pasta de produtor é uma tarefa `rclone copy` independente (`.../FERNANDO/<Atividade>/<Cidade>/<Produtor> - RESUMO`), então o seletor `[4]` mostra o mapeamento ao lado do nome local:
 
@@ -136,6 +153,49 @@ Isso vale para **todas** as rotinas: `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`. Cada 
 ```
 
 > Pastas sem prefixo viram `<nome> - RESUMO` do mesmo jeito.
+
+## 📷 Triagem de Fotos de Campo (`triagem-campo.ps1`)
+
+Script separado que alimenta o OneDrive a partir das fotos do celular (via **Syncthing**), antes do `start-sync.ps1` subir tudo ao Drive. Arquitetura completa em [`.plan/Triagem-de-Fotos-no-Campo.md`](.plan/Triagem-de-Fotos-no-Campo.md).
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1"          # lê visitas.json se existir
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar    # força colar o JSON no terminal (FIM encerra)
+```
+
+### Sufixo `- RESUMO` automático
+
+Ao ler o JSON (de `visitas.json` ou colado), cada `produtor_pasta` é normalizado para terminar em ` - RESUMO` (verificação **case-insensitive** e idempotente):
+
+```
+2026-11-OSMAR - ITAPITANGUI   ->  2026-11-OSMAR - ITAPITANGUI - RESUMO
+2026-11-MARIA DAS GRAÇAS      ->  2026-11-MARIA DAS GRAÇAS - RESUMO
+```
+
+Assim a pasta local já nasce com o mesmo nome que o `start-sync.ps1` espera no Drive (sem duplicar o sufixo).
+
+### Separação explícita das datas
+
+- **`data` (`AAAA-MM-DD`)**: dia exato da visita, usado **exclusivamente para buscar as fotos** daquele dia no Syncthing (EXIF `DateTimeOriginal`, padrão `AAAAMMDD` do nome ou `LastWriteTime`).
+- **`produtor_pasta` (`AAAA-MM-NOME - RESUMO`)**: usa **apenas ano/mês**, nunca o dia.
+
+### Etapa 1 — Revisão interativa ANTES de criar pastas
+
+Antes de tocar no disco, o script abre uma lista navegável com `[Console]::ReadKey($true)` mostrando cada visita como `[AAAA-MM-DD] Cidade > Atividade > Nome_Pasta_Final` (a data exibida é a da busca de fotos):
+
+| Tecla | Ação |
+| :--- | :--- |
+| `↑` / `↓` | Navegar na lista |
+| `E` | **Editar** o item em 4 passos: **data da visita** `AAAA-MM-DD` (Enter mantém), cidade (lista numerada `1–6`), atividade (`1–6` + `7 PROJETO PRODUTIVO`), nome da pasta (Enter mantém o atual em cada passo; o nome sempre volta a ter prefixo `AAAA-MM-` e sufixo ` - RESUMO`) |
+| `D` / `Delete` | **Remover** o item selecionado da lista (não cria a pasta) |
+| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar todas essas pastas no OneDrive? (S/N)"`. `S` cria as pastas que faltam e segue para a triagem de fotos; `N` volta à lista |
+| `Q` / `Esc` | **Cancelar e sair** sem criar nenhuma pasta |
+
+`try/finally` garante que `[Console]::CursorVisible` volte a `$true` ao sair. Só depois da confirmação (`S`) as pastas `Cidade\Atividade\AAAA-MM-PRODUTOR - RESUMO` são criadas no `$OneDriveBase`.
+
+### Etapa 2 — Triagem de fotos + GPS
+
+Depois de criar as pastas, o script indexa as fotos do Syncthing (`$SyncthingFotos`), agrupa por data + bloco de horário (intervalo de 40 min) e distribui por tag (`A`/`B`/`C`, `P` pular, `I` foto a foto, `Q` sair). Para cada lote copiado, extrai o GPS EXIF e gera `coordenadas_gps.txt` na pasta do produtor. Auditoria em `triagem-log.txt`.
 
 ## 🚫 Nunca sincronizar (`ignorados.json`)
 
@@ -276,7 +336,8 @@ Você está trabalhando no projeto "Sync ATER" localizado em "C:\Users\randomace
 Contexto técnico obrigatório:
 - Origem local (OneDrive): "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>\<Produtor>"
 - Destino nuvem (Google Drive): "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>" (hierarquia invertida entre Cidade e Atividade).
-- Padronização do nome: remover o prefixo com `-replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''` e acrescentar " - RESUMO". Aplicar em [1], [2], [3], [4] e -Auto, uma tarefa de produtor por vez.
+- Padronização do nome: remover o prefixo com `-replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''` e acrescentar " - RESUMO" de forma IDEMPOTENTE (se o nome limpo já termina em `\s*-\s*RESUMO$`, case-insensitive, preservar sem duplicar). Aplicar em [1], [2], [3], [4] e -Auto, uma tarefa de produtor por vez.
+- Triagem de campo (triagem-campo.ps1): normaliza produtor_pasta para terminar em " - RESUMO" e abre revisão interativa TUI (setas, E editar, D/Delete remover, C/Enter confirmar S/N, Q/Esc cancelar) ANTES de criar qualquer pasta no OneDrive; try/finally restaura CursorVisible.
 - Nunca sincronizar: "ignorados.json" guarda exclusivamente o caminho relativo "Cidade\Atividade\NomePastaProdutor" (nunca o nome isolado do produtor, pois a mesma pessoa pode existir em outra atividade) e todas as rotinas pulam essas entradas.
 - Autenticação: Remote OAuth chamado "gdrive_saconsult" autenticado na conta "fernandoavena.saconsult@gmail.com". A pasta destino fica em "Compartilhados comigo" (NÃO é Team Drive/Shared Drive), exigindo a flag `--drive-shared-with-me`.
 - Regra de ouro: Usar exclusivamente `rclone copy --update` (NUNCA `rclone sync`), pois arquivos adicionados por outros técnicos no Google Drive jamais podem ser apagados.

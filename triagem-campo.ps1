@@ -31,6 +31,16 @@ $IntervaloVisitaMinutos = 40
 $ExtensoesFoto          = @(".jpg", ".jpeg", ".png", ".heic", ".mp4")
 $LogFile                = Join-Path $PSScriptRoot "triagem-log.txt"
 
+# Listas oficiais para a revisao interativa (batem com start-sync.ps1)
+$Cidades = @(
+    "Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro"
+)
+$Atividades = @(
+    "ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3",
+    "ATIVIDADE INDIVIDUAL 4", "ATIVIDADE INDIVIDUAL 5", "ATIVIDADE INDIVIDUAL 6",
+    "PROJETO PRODUTIVO"
+)
+
 # Garante saída em UTF8 no console (Windows)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 
@@ -49,6 +59,34 @@ function Write-TriagemLog {
     param([string]$Mensagem)
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Add-Content -Path $LogFile -Value "$timestamp | $Mensagem" -Encoding UTF8
+}
+
+# ================= FUNÇÃO: DRENAR TECLAS PENDENTES =================
+function Clear-KeyBuffer {
+    try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { }
+}
+
+# ================= FUNÇÃO: GARANTIR SUFIXO - RESUMO (idempotente) =================
+function Add-SufixoResumo {
+    param([string]$Nome)
+    if ([string]::IsNullOrWhiteSpace($Nome)) { return $Nome }
+    # -match e case-insensitive por padrao: nao duplica se ja terminar em - RESUMO
+    if ($Nome -match '\s*-\s*RESUMO$') { return $Nome }
+    return "$Nome - RESUMO"
+}
+
+# ================= FUNÇÃO: NOME DA PASTA = PREFIXO AAAA-MM- + NOME + - RESUMO =================
+# A pasta usa APENAS ano/mes (nunca o dia). O dia exato fica no campo "data" do JSON,
+# que e usado somente para buscar as fotos no Syncthing.
+function Format-NomePastaProdutor {
+    param([string]$Nome, [string]$MesPrefixo)
+    if ([string]::IsNullOrWhiteSpace($Nome)) { return $Nome }
+    $Nome = $Nome.Trim()
+    # Garante o prefixo AAAA-MM- (se o usuario digitou so o nome, prepende o mes)
+    if ($Nome -notmatch '^\d{4}-\d{2}-') {
+        $Nome = "$MesPrefixo-$Nome"
+    }
+    return Add-SufixoResumo $Nome
 }
 
 # ================= FUNÇÃO: LER DATA/HORA + GPS EXIF =================
@@ -187,6 +225,161 @@ function Export-CoordenadasTxt {
     return $FotosComGps.Count
 }
 
+# ================= FUNÇÃO: EDITAR UMA VISITA (data / cidade / atividade / nome) =================
+# Recebe o item da revisao (Dia + Visita). A data editada e a do DIA (campo "data"),
+# usada exclusivamente para buscar as fotos; o nome da pasta usa so ano/mes.
+function Edit-VisitaItem {
+    param($Item)
+    $Dia    = $Item.Dia
+    $Visita = $Item.Visita
+
+    # 1. Data da visita AAAA-MM-DD (usada para localizar as fotos do dia no Syncthing)
+    Write-Host "`n  Data atual da visita (busca de fotos): $($Dia.data)" -ForegroundColor DarkGray
+    $R = Read-Host "  Nova data AAAA-MM-DD (Enter mantem)"
+    if (-not [string]::IsNullOrWhiteSpace($R)) {
+        $NovaData = $R.Trim()
+        if ($NovaData -match '^\d{4}-\d{2}-\d{2}$') {
+            $Dia.data = $NovaData
+        } else {
+            Write-Host "  [!] Data invalida (use AAAA-MM-DD). Mantida a anterior." -ForegroundColor Red
+            Start-Sleep -Milliseconds 1200
+        }
+    }
+
+    # 2. Cidade (lista numerada; Enter mantem a atual)
+    Write-Host "`n  Cidades:" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $Cidades.Count; $i++) { Write-Host "   [$($i+1)] $($Cidades[$i])" -ForegroundColor White }
+    Write-Host "   Atual: $($Visita.cidade)" -ForegroundColor DarkGray
+    $R = Read-Host "  Numero da cidade (Enter mantem)"
+    if ($R -match '^\d+$' -and [int]$R -ge 1 -and [int]$R -le $Cidades.Count) {
+        $Visita.cidade = $Cidades[[int]$R - 1]
+    }
+
+    # 3. Atividade (lista numerada; Enter mantem a atual)
+    Write-Host "`n  Atividades:" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $Atividades.Count; $i++) { Write-Host "   [$($i+1)] $($Atividades[$i])" -ForegroundColor White }
+    Write-Host "   Atual: $($Visita.atividade)" -ForegroundColor DarkGray
+    $R = Read-Host "  Numero da atividade (Enter mantem)"
+    if ($R -match '^\d+$' -and [int]$R -ge 1 -and [int]$R -le $Atividades.Count) {
+        $Visita.atividade = $Atividades[[int]$R - 1]
+    }
+
+    # 4. Nome da pasta do produtor (Enter mantem; garante prefixo AAAA-MM- e sufixo - RESUMO)
+    # MesPrefixo vem de mes_prefixo do JSON; senao deriva dos 7 primeiros chars da data.
+    $MesPrefixo = $Dia.data.Substring(0, 7)
+    $PropMes = $Dia.PSObject.Properties['mes_prefixo']
+    if ($PropMes -and $PropMes.Value) { $MesPrefixo = [string]$PropMes.Value }
+
+    Write-Host "`n  Nome atual da pasta: $($Visita.produtor_pasta)" -ForegroundColor DarkGray
+    $R = Read-Host "  Novo nome (Enter mantem)"
+    if (-not [string]::IsNullOrWhiteSpace($R)) {
+        $Novo = $R.Trim()
+        if (Test-CampoSeguro $Novo) {
+            $Visita.produtor_pasta = Format-NomePastaProdutor -Nome $Novo -MesPrefixo $MesPrefixo
+        } else {
+            Write-Host "  [!] Nome invalido (caracteres de caminho). Mantido o anterior." -ForegroundColor Red
+            Start-Sleep -Milliseconds 1200
+        }
+    }
+}
+
+# ================= FUNÇÃO: REVISÃO INTERATIVA (TUI com setas) =================
+# Retorna $true se o usuario confirmar a criacao; $false se cancelar/sair.
+# Edita/remove itens no proprio $RelatorioDias (referencias), antes de criar pastas.
+function Show-RevisaoVisitas {
+    param([array]$RelatorioDias)
+
+    $Itens = [System.Collections.Generic.List[object]]::new()
+    foreach ($Dia in $RelatorioDias) {
+        foreach ($Visita in $Dia.visitas) {
+            $Itens.Add([PSCustomObject]@{ Dia = $Dia; Visita = $Visita })
+        }
+    }
+
+    if ($Itens.Count -eq 0) {
+        Write-Host "`n[AVISO] Nenhuma visita no JSON para revisar." -ForegroundColor Yellow
+        return $false
+    }
+
+    $Atual  = 0
+    $Offset = 0
+    $Altura = 15
+    try { $Altura = [Math]::Max(6, $Host.UI.RawUI.WindowSize.Height - 12) } catch { }
+    try { [Console]::CursorVisible = $false } catch { }
+
+    try {
+        while ($true) {
+            if ($Itens.Count -eq 0) {
+                Write-Host "`n[AVISO] Lista vazia (todos os itens foram removidos). Nada a criar." -ForegroundColor Yellow
+                return $false
+            }
+            if ($Atual -gt ($Itens.Count - 1)) { $Atual = $Itens.Count - 1 }
+            if ($Atual -lt 0) { $Atual = 0 }
+
+            Clear-Host
+            Write-Host ("=" * 74) -ForegroundColor Cyan
+            Write-Host " REVISAO DAS VISITAS - antes de criar pastas no OneDrive    Total: $($Itens.Count)" -ForegroundColor White
+            Write-Host ("=" * 74) -ForegroundColor Cyan
+            Write-Host " [Setas] Navegar | [E] Editar | [D/Del] Remover | [C/Enter] Confirmar | [Q/Esc] Cancelar" -ForegroundColor Yellow
+            Write-Host ("-" * 74) -ForegroundColor Cyan
+
+            if ($Atual -lt $Offset) { $Offset = $Atual }
+            if ($Atual -ge ($Offset + $Altura)) { $Offset = $Atual - $Altura + 1 }
+            $Fim = [Math]::Min($Itens.Count - 1, $Offset + $Altura - 1)
+
+            for ($i = $Offset; $i -le $Fim; $i++) {
+                $It = $Itens[$i]
+                $V  = $It.Visita
+                $Linha = " [$($It.Dia.data)] $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)"
+                if ($i -eq $Atual) { Write-Host $Linha -ForegroundColor Black -BackgroundColor Gray }
+                else { Write-Host $Linha -ForegroundColor White }
+            }
+
+            Write-Host ("-" * 74) -ForegroundColor Cyan
+            $Tecla = [Console]::ReadKey($true)
+
+            switch ($Tecla.Key) {
+                "UpArrow"   { if ($Atual -gt 0) { $Atual-- } }
+                "DownArrow" { if ($Atual -lt ($Itens.Count - 1)) { $Atual++ } }
+                "E" {
+                    try { [Console]::CursorVisible = $true } catch { }
+                    Clear-Host
+                    Write-Host "=== EDITAR VISITA ===" -ForegroundColor Cyan
+                    Edit-VisitaItem -Item $Itens[$Atual]
+                    Clear-KeyBuffer
+                    try { [Console]::CursorVisible = $false } catch { }
+                }
+                { $_ -in "D", "Delete" } {
+                    $Removido = $Itens[$Atual]
+                    $Itens.RemoveAt($Atual)
+                    Write-TriagemLog "REMOVIDO na revisao: $($Removido.Dia.data) / $($Removido.Visita.produtor_pasta)"
+                    if ($Atual -ge $Itens.Count -and $Atual -gt 0) { $Atual-- }
+                }
+                { $_ -in "C", "Enter" } {
+                    try { [Console]::CursorVisible = $true } catch { }
+                    Write-Host ""
+                    $Resp = Read-Host "Deseja criar todas essas pastas no OneDrive? (S/N)"
+                    Clear-KeyBuffer
+                    if ($Resp -in @('s', 'S', 'y', 'Y')) {
+                        # Reconstroi as visitas de cada dia apenas com os itens sobreviventes
+                        foreach ($Dia in $RelatorioDias) {
+                            $Dia.visitas = @($Itens |
+                                Where-Object { [object]::ReferenceEquals($_.Dia, $Dia) } |
+                                ForEach-Object { $_.Visita })
+                        }
+                        return $true
+                    }
+                    try { [Console]::CursorVisible = $false } catch { }
+                }
+                { $_ -in "Q", "Escape" } { return $false }
+            }
+        }
+    } finally {
+        try { [Console]::CursorVisible = $true } catch { }
+        Clear-KeyBuffer
+    }
+}
+
 # ================= 1. CARREGAR JSON (ARQUIVO OU COLADO) =================
 Clear-Host
 Write-Host "========================================================================" -ForegroundColor Cyan
@@ -218,7 +411,26 @@ try {
     exit 1
 }
 
-# ================= 2. CRIAR PASTAS NO ONEDRIVE =================
+# SEPARACAO EXPLICITA DAS DATAS DO JSON:
+#   - "data" (AAAA-MM-DD) = dia exato da visita -> usado SO para filtrar/localizar as
+#     fotos daquele dia no Syncthing (EXIF DateTimeOriginal, nome AAAAMMDD ou LastWriteTime).
+#   - "produtor_pasta" (AAAA-MM-NOME - RESUMO) = usa APENAS ano/mes, nunca o dia.
+# Normaliza o sufixo - RESUMO em todas as visitas (idempotente, case-insensitive).
+foreach ($Dia in $RelatorioDias) {
+    foreach ($Visita in $Dia.visitas) {
+        $Visita.produtor_pasta = Add-SufixoResumo $Visita.produtor_pasta
+    }
+}
+
+# ================= ETAPA 1a: REVISÃO INTERATIVA (antes de criar qualquer pasta) =================
+$Confirmado = Show-RevisaoVisitas -RelatorioDias $RelatorioDias
+if (-not $Confirmado) {
+    Write-Host "`n[CANCELADO] Nenhuma pasta foi criada no OneDrive." -ForegroundColor Yellow
+    Write-TriagemLog "REVISAO CANCELADA - nenhuma pasta criada"
+    exit 0
+}
+
+# ================= ETAPA 1b: CRIAR PASTAS NO ONEDRIVE (confirmado) =================
 Write-Host "`n=== ETAPA 1: VERIFICANDO E CRIANDO PASTAS NO ONEDRIVE ===" -ForegroundColor Cyan
 
 foreach ($Dia in $RelatorioDias) {
@@ -271,6 +483,8 @@ Write-Progress -Activity "Indexando fotos" -Completed
 
 # ================= 4. DISTRIBUIR FOTOS E GERAR GPS TXT =================
 foreach ($Dia in $RelatorioDias) {
+    # Filtra as fotos pelo campo "data" (AAAA-MM-DD) do dia — nao pelo prefixo da pasta.
+    # DataStr vem do EXIF DateTimeOriginal, do padrao AAAAMMDD do nome ou do LastWriteTime.
     $FotosDoDia = @($TodasFotos | Where-Object { $_.DataStr -eq $Dia.data })
 
     Write-Host "`n========================================================================" -ForegroundColor Cyan

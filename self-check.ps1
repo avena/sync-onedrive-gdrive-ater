@@ -1,6 +1,7 @@
 # Self-check: roda em pasta temporária, sem tocar no OneDrive real nem no ignorados.json
 $ErrorActionPreference = 'Stop'
-$Script = Join-Path $PSScriptRoot 'start-sync.ps1'
+$Script        = Join-Path $PSScriptRoot 'start-sync.ps1'
+$ScriptTriagem = Join-Path $PSScriptRoot 'triagem-campo.ps1'
 
 $Erros = $null
 $Ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$Erros)
@@ -8,6 +9,14 @@ if ($Erros.Count) { throw "Sintaxe: $($Erros[0].Message)" }
 
 # Carrega somente as funções (sem executar menu/modo -Auto)
 foreach ($F in $Ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    . ([scriptblock]::Create($F.Extent.Text))
+}
+
+# Triagem: valida sintaxe e carrega só as funções (sem executar o fluxo interativo)
+$ErrosT = $null
+$AstT = [System.Management.Automation.Language.Parser]::ParseFile($ScriptTriagem, [ref]$null, [ref]$ErrosT)
+if ($ErrosT.Count) { throw "Sintaxe triagem: $($ErrosT[0].Message)" }
+foreach ($F in $AstT.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
     . ([scriptblock]::Create($F.Extent.Text))
 }
 
@@ -30,6 +39,21 @@ try {
     if ((Get-NomeResumo '2026-11-RICARDO ISHIDA') -ne 'RICARDO ISHIDA - RESUMO') { throw 'renomeação com data falhou' }
     if ((Get-NomeResumo '03 - Rafael Souza') -ne 'Rafael Souza - RESUMO') { throw 'renomeação com número falhou' }
     if ((Get-NomeResumo 'SEM PREFIXO') -ne 'SEM PREFIXO - RESUMO') { throw 'renomeação sem prefixo falhou' }
+
+    # 1b) idempotência do - RESUMO no start-sync (não duplicar)
+    if ((Get-NomeResumo '2026-11-OSMAR - ITAPITANGUI - RESUMO') -ne 'OSMAR - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO com prefixo de data' }
+    if ((Get-NomeResumo 'OSMAR - ITAPITANGUI - RESUMO') -ne 'OSMAR - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO sem prefixo' }
+    if ((Get-NomeResumo 'JOAO - resumo') -ne 'JOAO - resumo') { throw 'idempotência case-insensitive falhou' }
+
+    # 1c) Add-SufixoResumo da triagem (idempotente, case-insensitive)
+    if ((Add-SufixoResumo '2026-11-OSMAR - ITAPITANGUI') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: sufixo não adicionado' }
+    if ((Add-SufixoResumo '2026-11-OSMAR - ITAPITANGUI - RESUMO') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou RESUMO' }
+    if ((Add-SufixoResumo 'NOME - RESUMO') -ne 'NOME - RESUMO') { throw 'triagem: idempotência falhou' }
+
+    # 1d) Format-NomePastaProdutor: prefixo AAAA-MM- + sufixo - RESUMO (pasta usa só ano/mês)
+    if ((Format-NomePastaProdutor -Nome 'OSMAR - ITAPITANGUI' -MesPrefixo '2026-11') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo+sufixo não garantidos' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-OSMAR - ITAPITANGUI - RESUMO' -MesPrefixo '2026-11') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-OSMAR' -MesPrefixo '2026-11') -ne '2026-11-OSMAR - RESUMO') { throw 'triagem: prefixo existente não preservado' }
 
     # 2) caminho de destino montado
     $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-RICARDO ISHIDA' })[0]

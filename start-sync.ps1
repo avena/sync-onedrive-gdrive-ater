@@ -128,9 +128,13 @@ function Test-RemoteConfigurado {
 $IgnoradosFile = Join-Path $PSScriptRoot 'ignorados.json'
 
 # "2026-11-RICARDO ISHIDA" e "03 - Rafael Souza" -> "RICARDO ISHIDA - RESUMO"
+# Idempotente: se o nome limpo ja termina em "- RESUMO" (case-insensitive), preserva
+# sem duplicar (pastas criadas pelo triagem-campo.ps1 ja vem com o sufixo).
 function Get-NomeResumo {
     param([string]$Nome)
-    return ("{0} - RESUMO" -f ($Nome -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''))
+    $Limpo = $Nome -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''
+    if ($Limpo -match '\s*-\s*RESUMO$') { return $Limpo }
+    return "$Limpo - RESUMO"
 }
 
 # Lista de caminhos relativos ignorados: "Cidade\Atividade\NomePastaProdutor"
