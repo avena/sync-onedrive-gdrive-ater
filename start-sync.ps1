@@ -18,6 +18,7 @@ $OrigemBase  = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Con
 $NomeRemoto  = "gdrive_saconsult"
 $RemotoDrive = "${NomeRemoto}:VALE DO RIBEIRA/FERNANDO"
 $LogDir      = Join-Path $PSScriptRoot 'logs'
+$RunsDir     = Join-Path $PSScriptRoot 'runs'   # manifestos de auditoria: NUNCA apagar
 $NomeTarefa  = "Sync_ATER_OneDrive_GDrive"
 $ScriptPath  = $PSCommandPath
 
@@ -43,6 +44,7 @@ $Atividades = @(
 # copy + --update: copia novos e atualiza mais recentes; NUNCA apaga nada no destino.
 $RcloneFlags = @(
     "--update",
+    "--exclude", "*.json",   # .json estruturado fica APENAS local/OneDrive (não sobe ao Drive da SA)
     "--transfers=4",
     "--checkers=8",
     "--drive-shared-with-me",
@@ -132,9 +134,66 @@ $IgnoradosFile = Join-Path $PSScriptRoot 'ignorados.json'
 # sem duplicar (pastas criadas pelo triagem-campo.ps1 ja vem com o sufixo).
 function Get-NomeResumo {
     param([string]$Nome)
-    $Limpo = $Nome -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''
+    # remove prefixo de data completa (AAAA-MM-DD-), ano-mês (AAAA-MM-) ou número (NN - )
+    $Limpo = $Nome -replace '^(\d{4}-\d{2}(-\d{2})?-|\d+\s*-\s*)', ''
     if ($Limpo -match '\s*-\s*RESUMO$') { return $Limpo }
     return "$Limpo - RESUMO"
+}
+
+# ================= URLs DO DRIVE + MANIFESTO runs\ =================
+# Cache de listagens lsjson por pasta pai (so consulta pastas atualizadas; economia de API)
+$Script:DriveDirCache = @{}
+
+function Get-DriveFolderUrl {
+    param([string]$Atividade, [string]$Cidade, [string]$NomeDrive)
+    $parent = "$RemotoDrive/$Atividade/$Cidade"
+    if (-not $Script:DriveDirCache.ContainsKey($parent)) {
+        $entries = @()
+        try {
+            $raw = & rclone lsjson $parent --dirs-only --drive-shared-with-me --quiet 2>$null
+            if ($LASTEXITCODE -eq 0 -and $raw) { $entries = @(($raw -join "`n") | ConvertFrom-Json) }
+        } catch { $entries = @() }
+        $Script:DriveDirCache[$parent] = $entries
+    }
+    $entry = $Script:DriveDirCache[$parent] | Where-Object { $_.Name -eq $NomeDrive } | Select-Object -First 1
+    if ($entry -and $entry.ID) { return "https://drive.google.com/drive/folders/$($entry.ID)" }
+    return $null
+}
+
+# Grava manifesto em runs\ mapeando produtor -> caminho local + URL no Drive (so pastas modificadas)
+function Write-SyncRun {
+    param([string]$Escopo, [array]$Modificados, [bool]$Simulacao)
+    if ($Simulacao) { return }
+    if (-not $Modificados -or $Modificados.Count -eq 0) { return }
+    if (-not (Test-Path $RunsDir)) { New-Item -ItemType Directory -Force -Path $RunsDir | Out-Null }
+    $ts = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+    $base = Join-Path $RunsDir "${ts}__${Escopo}__start-sync"
+
+    $itens = [System.Collections.Generic.List[object]]::new()
+    foreach ($m in $Modificados) {
+        $url = Get-DriveFolderUrl -Atividade $m.Atividade -Cidade $m.Cidade -NomeDrive $m.NomeDrive
+        $itens.Add([PSCustomObject]@{
+            produtor = $m.Produtor; cidade = $m.Cidade; atividade = $m.Atividade
+            nome_drive = $m.NomeDrive; local = $m.Local; url = $url
+            copiados = $m.Copiados; atualizados = $m.Atualizados
+        })
+    }
+    [PSCustomObject]@{ timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); escopo = $Escopo; produtores = $itens } |
+        ConvertTo-Json -Depth 10 | Set-Content -Path "$base.json" -Encoding UTF8
+
+    $linhas = [System.Collections.Generic.List[string]]::new()
+    $linhas.Add("SYNC ATER - $ts - escopo $Escopo")
+    $linhas.Add("Produtores com arquivos copiados/atualizados: $($itens.Count)")
+    $linhas.Add("")
+    foreach ($i in $itens) {
+        $linhas.Add("[$($i.cidade) | $($i.atividade)] $($i.produtor) -> $($i.nome_drive)")
+        $linhas.Add("  Local: $($i.local)")
+        $linhas.Add("  Drive: $(if ($i.url) { $i.url } else { '(URL nao obtida)' })")
+        $linhas.Add("  $($i.copiados) novo(s), $($i.atualizados) atualizado(s)")
+        $linhas.Add("")
+    }
+    Set-Content -Path "$base.txt" -Value $linhas -Encoding UTF8
+    Write-Host "[OK] Manifesto de URLs salvo em: $base.txt" -ForegroundColor Cyan
 }
 
 # Lista de caminhos relativos ignorados: "Cidade\Atividade\NomePastaProdutor"
@@ -338,11 +397,19 @@ function Show-ProdutoresSelector {
 
                     $Pend = 0
                     $FalhasSel = 0
+                    $ModSel = [System.Collections.Generic.List[object]]::new()
                     foreach ($Sel in $Alvos) {
                         Write-Host "-> $($Sel.Cidade) | $($Sel.Atividade) | $($Sel.Produtor)" -ForegroundColor Green
                         $R = Invoke-RcloneCopy -Local $Sel.Local -Nuvem $Sel.Nuvem -Simulacao $Simular -LogFile $LogSel
                         $Pend += $R.Pendentes
                         if ($R.Codigo -ne 0) { $FalhasSel++ }
+                        if (-not $Simular -and ($R.Copiados + $R.Atualizados) -gt 0) {
+                            $ModSel.Add([PSCustomObject]@{
+                                Produtor = $Sel.Produtor; Cidade = $Sel.Cidade; Atividade = $Sel.Atividade
+                                NomeDrive = $Sel.NomeDrive; Local = $Sel.Local
+                                Copiados = $R.Copiados; Atualizados = $R.Atualizados
+                            })
+                        }
                         $Resumo = if ($Simular) {
                             "$($R.Pendentes) arquivo(s) pendente(s)"
                         } else {
@@ -351,6 +418,7 @@ function Show-ProdutoresSelector {
                         if ($R.Erros -gt 0) { $Resumo += " | $($R.Erros) erro(s)" }
                         Write-Host "   -> $Resumo`n" -ForegroundColor DarkCyan
                     }
+                    Write-SyncRun -Escopo 'SELETOR' -Modificados $ModSel -Simulacao $Simular
 
                     if ($Simular) {
                         if ($Pend -eq 0 -and $FalhasSel -eq 0) {
@@ -433,7 +501,8 @@ function Update-RcloneBinario {
 function Invoke-AterSync {
     param(
         [bool]$Simulacao = $false,
-        [string]$ApenasCidade = ""   # vazio = todas as cidades
+        [string]$ApenasCidade = "",   # vazio = todas as cidades
+        [string]$Escopo = "TODAS"     # rotulo do manifesto em runs\
     )
 
     if (-not (Test-Path $OrigemBase)) {
@@ -486,6 +555,7 @@ function Invoke-AterSync {
     $Falhas    = 0
     $Pendentes = 0
     $Erros     = 0
+    $Modificados = [System.Collections.Generic.List[object]]::new()
 
     foreach ($T in $Tarefas) {
         $Indice++
@@ -496,6 +566,15 @@ function Invoke-AterSync {
         $Resultado = Invoke-RcloneCopy -Local $T.Local -Nuvem $T.Nuvem -Simulacao $Simulacao -LogFile $LogFile
         $Pendentes += $Resultado.Pendentes
         $Erros     += $Resultado.Erros
+
+        # So pastas com arquivos efetivamente copiados/atualizados entram no manifesto de URLs
+        if (-not $Simulacao -and ($Resultado.Copiados + $Resultado.Atualizados) -gt 0) {
+            $Modificados.Add([PSCustomObject]@{
+                Produtor = $T.Produtor; Cidade = $T.Cidade; Atividade = $T.Atividade
+                NomeDrive = $T.NomeDrive; Local = $T.Local
+                Copiados = $Resultado.Copiados; Atualizados = $Resultado.Atualizados
+            })
+        }
 
         $Resumo = if ($Simulacao) {
             "$($Resultado.Pendentes) arquivo(s) pendente(s)"
@@ -525,6 +604,8 @@ function Invoke-AterSync {
     Write-Host "Processo finalizado ($($Tarefas.Count) pastas verificadas, $QtdIgnorados ignoradas, $Falhas com falha)." -ForegroundColor Cyan
     Write-Host "Log salvo em: $LogFile`n" -ForegroundColor Gray
 
+    Write-SyncRun -Escopo $Escopo -Modificados $Modificados -Simulacao $Simulacao
+
     return ($Falhas -eq 0)
 }
 
@@ -533,7 +614,7 @@ if ($Auto) {
     # Checagem sempre roda, mas sem prompt (Agendador não tem console)
     if (-not (Test-AndInstallRclone -Silent)) { exit 1 }
     # Exit code importa: Agendador marca a tarefa como falha se retornar != 0
-    if (Invoke-AterSync -Simulacao $false) { exit 0 } else { exit 1 }
+    if (Invoke-AterSync -Simulacao $false -Escopo 'AUTO') { exit 0 } else { exit 1 }
 }
 
 # ================= CHECAGEM INICIAL (MODO MANUAL) =================
@@ -590,7 +671,8 @@ do {
             for ($i = 0; $i -lt $Cidades.Count; $i++) { Write-Host " [$($i+1)] $($Cidades[$i])" -ForegroundColor White }
             $Escolha = Read-Host "Número da cidade (Enter cancela)"
             if ($Escolha -match '^\d+$' -and [int]$Escolha -ge 1 -and [int]$Escolha -le $Cidades.Count) {
-                Invoke-AterSync -Simulacao $false -ApenasCidade $Cidades[[int]$Escolha - 1]
+                $CidadeSel = $Cidades[[int]$Escolha - 1]
+                Invoke-AterSync -Simulacao $false -ApenasCidade $CidadeSel -Escopo ("CIDADE_" + ($CidadeSel -replace '\s+', '_'))
             } else {
                 Write-Host "Cancelado." -ForegroundColor Yellow
             }

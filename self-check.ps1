@@ -20,6 +20,15 @@ foreach ($F in $AstT.FindAll({ $args[0] -is [System.Management.Automation.Langua
     . ([scriptblock]::Create($F.Extent.Text))
 }
 
+# Screenshots: valida sintaxe e carrega só as funções (sem executar a migração)
+$ScriptShots = Join-Path $PSScriptRoot 'limpar-screenshots.ps1'
+$ErrosS = $null
+$AstS = [System.Management.Automation.Language.Parser]::ParseFile($ScriptShots, [ref]$null, [ref]$ErrosS)
+if ($ErrosS.Count) { throw "Sintaxe screenshots: $($ErrosS[0].Message)" }
+foreach ($F in $AstS.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    . ([scriptblock]::Create($F.Extent.Text))
+}
+
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("ater_check_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
@@ -50,10 +59,52 @@ try {
     if ((Add-SufixoResumo '2026-11-OSMAR - ITAPITANGUI - RESUMO') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou RESUMO' }
     if ((Add-SufixoResumo 'NOME - RESUMO') -ne 'NOME - RESUMO') { throw 'triagem: idempotência falhou' }
 
-    # 1d) Format-NomePastaProdutor: prefixo AAAA-MM- + sufixo - RESUMO (pasta usa só ano/mês)
-    if ((Format-NomePastaProdutor -Nome 'OSMAR - ITAPITANGUI' -MesPrefixo '2026-11') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo+sufixo não garantidos' }
-    if ((Format-NomePastaProdutor -Nome '2026-11-OSMAR - ITAPITANGUI - RESUMO' -MesPrefixo '2026-11') -ne '2026-11-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
-    if ((Format-NomePastaProdutor -Nome '2026-11-OSMAR' -MesPrefixo '2026-11') -ne '2026-11-OSMAR - RESUMO') { throw 'triagem: prefixo existente não preservado' }
+    # 1d) Format-NomePastaProdutor: prefixo AAAA-MM-DD- (dia completo) + sufixo - RESUMO
+    if ((Format-NomePastaProdutor -Nome 'OSMAR - ITAPITANGUI' -Data '2026-11-12') -ne '2026-11-12-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo+sufixo não garantidos' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-12-OSMAR - ITAPITANGUI - RESUMO' -Data '2026-11-12') -ne '2026-11-12-OSMAR - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-OSMAR' -Data '2026-11-12') -ne '2026-11-12-OSMAR - RESUMO') { throw 'triagem: prefixo parcial não normalizado' }
+
+    # 1e) start-sync remove prefixo de data COMPLETA (AAAA-MM-DD-) tambem
+    if ((Get-NomeResumo '2026-11-12-OSMAR - ITAPITANGUI - RESUMO') -ne 'OSMAR - ITAPITANGUI - RESUMO') { throw 'start-sync: não removeu dia completo' }
+
+    # 1f) Remove-YamlHeader / Read-MetadadosTxt
+    $yamlTxt = "---`ndata: 2026-11-12`nperiodo: manha`n---`nCorpo do relatorio"
+    if ((Remove-YamlHeader $yamlTxt) -ne 'Corpo do relatorio') { throw 'triagem: YAML não removido' }
+    $txtFile = Join-Path $Tmp 'rel.txt'
+    Set-Content -Path $txtFile -Value $yamlTxt -Encoding UTF8
+    $mt = Read-MetadadosTxt -Path $txtFile
+    if ($mt.Campos['data'] -ne '2026-11-12' -or $mt.Campos['periodo'] -ne 'manha') { throw 'triagem: YAML parse falhou' }
+    if ($mt.Body.Trim() -ne 'Corpo do relatorio') { throw 'triagem: corpo YAML falhou' }
+
+    # 1g) ConvertTo-Minutos / Get-SugestaoTag (periodo e horario)
+    if ((ConvertTo-Minutos '09:30') -ne 570) { throw 'triagem: ConvertTo-Minutos falhou' }
+    $vA = [PSCustomObject]@{ tag = 'A'; periodo = 'manha'; hora_inicio = $null; hora_fim = $null }
+    $vB = [PSCustomObject]@{ tag = 'B'; periodo = 'tarde'; hora_inicio = $null; hora_fim = $null }
+    $loteManha = @([PSCustomObject]@{ DataHora = [datetime]'2026-11-12 09:00:00' }, [PSCustomObject]@{ DataHora = [datetime]'2026-11-12 09:30:00' })
+    if ((Get-SugestaoTag -Lote $loteManha -Visitas @($vA, $vB)) -ne 'A') { throw 'triagem: sugestão por período falhou' }
+    $vC = [PSCustomObject]@{ tag = 'C'; periodo = $null; hora_inicio = '09:00'; hora_fim = '10:00' }
+    if ((Get-SugestaoTag -Lote $loteManha -Visitas @($vC)) -ne 'C') { throw 'triagem: sugestão por horário falhou' }
+    if ($null -ne (Get-SugestaoTag -Lote $loteManha -Visitas @($vA, $vC))) { throw 'triagem: sugestão ambígua deveria ser nula' }
+
+    # 1h) ConvertTo-RelatorioDias: tags A/B e prefixo de dia completo
+    $va = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'OSMAR'
+    $vb = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'MARIA'
+    $dias = ConvertTo-RelatorioDias -Visitas @($va, $vb)
+    if ($dias[0].visitas[0].tag -ne 'A') { throw 'triagem: tag A não atribuída' }
+    if ($dias[0].visitas[1].produtor_pasta -ne '2026-11-12-MARIA - RESUMO') { throw 'triagem: nome de pasta não normalizado' }
+
+    # 1i) limpar-screenshots: classificação por app, data e soma segura
+    $AppsAmigaveis = @{ 'com.whatsapp' = 'WhatsApp'; 'com.android.chrome' = 'Chrome'; 'com.facebook.katana' = 'Facebook' }
+    $PrefixosGenericos = @('com', 'org', 'net', 'br', 'lt', 'eu', 'air', 'jus', 'gov')
+    if ((Get-NomePastaApp 'com.whatsapp') -ne 'WhatsApp') { throw 'screenshots: dicionário falhou' }
+    if ((Get-NomePastaApp 'com.android.chrome-edit') -ne 'Chrome') { throw 'screenshots: marcador -edit não removido' }
+    if ((Get-NomePastaApp 'com.dimep.kairosemployee.br') -ne 'Dimep') { throw 'screenshots: fallback de prefixos falhou' }
+    if ((Get-NomePastaApp $null) -ne 'Outros') { throw 'screenshots: sem app deveria ser Outros' }
+    if ((Get-SomaBytes @()) -ne 0) { throw 'screenshots: soma de lista vazia deveria ser 0' }
+    $fakePrint = New-Item -ItemType File -Path (Join-Path $Tmp 'Screenshot_2026-11-17-13-16-32-698_com.whatsapp__2.jpg')
+    if ((Get-AppDoPrint $fakePrint) -ne 'com.whatsapp') { throw 'screenshots: extração de app (colisão __2) falhou' }
+    $dataPrint = Get-DataPrint $fakePrint
+    if ($dataPrint.Ano -ne '2026' -or $dataPrint.Mes -ne '11') { throw 'screenshots: data do nome falhou' }
 
     # 2) caminho de destino montado
     $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-RICARDO ISHIDA' })[0]

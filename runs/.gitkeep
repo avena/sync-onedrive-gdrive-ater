@@ -1,0 +1,5 @@
+# Pasta runs/ — PERMANENTE (nunca apagar)
+# Manifestos de auditoria gerados pelos scripts:
+#   AAAA-MM-DD_HH-mm-ss__TRIAGEM__triagem-campo.json / .txt
+#   AAAA-MM-DD_HH-mm-ss__<ESCOPO>__start-sync.json / .txt
+# Diferente de logs/ (técnico, gira 7 dias), runs/ é versionado e nunca é limpo.

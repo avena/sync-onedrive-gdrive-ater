@@ -12,19 +12,21 @@
 Eliminar a classificação manual de fotos de campo. O ciclo:
 
 ```
-Celular (câmera, GPS ativado)
-   └─ Syncthing (DCIM/Camera, "enviar apenas")
-        └─ PC: C:\Users\randomacesso\Syncthing\Camera_Celular
-             └─ triagem-campo.ps1
-                  ├─ Etapa 1: revisão interativa (TUI) → cria pastas no OneDrive
-                  └─ Etapa 2: filtra fotos por data, agrupa por horário, distribui por TAG, gera GPS
-                       └─ OneDrive: ...\Fernando\<Cidade>\<Atividade>\<AAAA-MM-PRODUTOR - RESUMO>
-                            └─ start-sync.ps1 (rclone copy --update) → Google Drive da consultoria
+Relato / Áudio → Skill relatorio-ater-anater
+   └─ G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<Atividade>\<AAAA-MM-DD-NOME - RESUMO>\ (.txt + .json)
+Celular (câmera, GPS ativado) → Syncthing (DCIM/Camera, "enviar apenas")
+   └─ PC: C:\Users\randomacesso\Sync\Camera_Celular\Camera
+        └─ triagem-campo.ps1
+             ├─ Etapa 1: revisão TUI → cria pastas + grava .txt limpo/.json + arquiva _processados
+             └─ Etapa 2: filtra fotos por data, agrupa 40 min, pré-sugere (Enter), distribui TAG, gera GPS
+                  └─ OneDrive: ...\Fernando\<Cidade>\<Atividade>\<AAAA-MM-DD-PRODUTOR - RESUMO>
+                       └─ start-sync.ps1 (rclone copy --update --exclude *.json) → Google Drive da consultoria
+                            └─ runs\ : manifesto de auditoria (origens, fotos, pastas, GPS, URLs)
 ```
 
 Por que Syncthing e não API do Google Fotos: **zero limite de API**, arquivo original preservado, **EXIF intacto** (data + GPS). O Syncthing só copia bytes, não mexe em metadado.
 
-A entrada é o **relatório diário do WhatsApp** (texto livre). A IA converte em **JSON padronizado**; o script consome o JSON.
+**Fonte primária** dos relatórios: a **inbox espelhada** do Google Drive pessoal (`$InboxBase = G:\Meu Drive`), gerada pela skill `relatorio-ater-anater` como pares `.txt`/`.json`. **Fallback**: `.txt` com YAML, `visitas.json` manual ou colagem no terminal (`FIM`). O relatório original nasce do relato/áudio do WhatsApp.
 
 ---
 
@@ -35,15 +37,15 @@ O JSON tem **dois** campos de data com papéis distintos e que **não se mistura
 | Campo | Formato | Papel |
 |---|---|---|
 | `data` | `AAAA-MM-DD` (ex. `2026-11-12`) | **Dia exato** da visita. Usado **exclusivamente para filtrar/localizar as fotos** daquele dia na pasta do Syncthing. |
-| `produtor_pasta` | `AAAA-MM-NOME DO PRODUTOR - RESUMO` | Nome da pasta de destino. Usa **apenas ano e mês** (`AAAA-MM-`), **nunca o dia**. |
+| `produtor_pasta` | `AAAA-MM-DD-NOME DO PRODUTOR - RESUMO` | Nome da pasta de destino, com prefixo de **dia completo** (`AAAA-MM-DD-`) + sufixo ` - RESUMO`. |
 
 - A busca de fotos compara `data` com a data real de cada arquivo, resolvida nesta ordem:
   1. EXIF `DateTimeOriginal` (tag `0x9003` = 36867), via `System.Drawing` (JPG/JPEG);
   2. padrão `AAAAMMDD_HHMMSS` no nome do arquivo (Android/Samsung, ex. `20261112_143022.jpg`);
   3. fallback `LastWriteTime` (preservado pelo Syncthing).
-- No código: `$FotosDoDia = @($TodasFotos | Where-Object { $_.DataStr -eq $Dia.data })`. O prefixo da pasta **não** entra nesse filtro.
-- Ao carregar o JSON, `produtor_pasta` é normalizado para terminar em ` - RESUMO` (case-insensitive, idempotente — função `Add-SufixoResumo`).
-- Na edição do nome (revisão), `Format-NomePastaProdutor` garante **prefixo `AAAA-MM-`** (derivado de `mes_prefixo` ou dos 7 primeiros caracteres de `data`) **e sufixo ` - RESUMO`**.
+- No código: `$FotosDoDia = @($TodasFotos | Where-Object { $_.DataStr -eq $Dia.data })`. O prefixo da pasta **não** entra nesse filtro — o dia da busca vem sempre do campo `data`.
+- `Format-NomePastaProdutor -Nome … -Data …` remove qualquer prefixo de data existente (parcial `AAAA-MM-` ou completo `AAAA-MM-DD-`) e repõe o prefixo de **dia completo** a partir de `data`, mais o sufixo ` - RESUMO` (idempotente, case-insensitive).
+- O `start-sync.ps1` remove esse prefixo (dia completo ou ano-mês) ao montar o nome no Drive — ver regex em [`Espelhamento-de-Pastas-no-Drive.md`](Espelhamento-de-Pastas-no-Drive.md).
 
 ---
 
@@ -53,10 +55,30 @@ O JSON tem **dois** campos de data com papéis distintos e que **não se mistura
 C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\
 └─ <Cidade>\
    └─ <ATIVIDADE INDIVIDUAL N | PROJETO PRODUTIVO>\
-      └─ <AAAA-MM-NOME DO PRODUTOR - RESUMO>\
+      └─ <AAAA-MM-DD-NOME DO PRODUTOR - RESUMO>\
+         ├─ relatorio.txt        ← .txt limpo (sem YAML), pronto p/ Word
+         ├─ relatorio.json       ← metadados estruturados (fica só local/OneDrive)
          ├─ foto.jpg ...
-         └─ coordenadas_gps.txt   ← gerado pelo script
+         └─ coordenadas_gps.txt  ← gerado pelo script
 ```
+
+### 3b. Inbox espelhada (fonte primária) e `_processados`
+
+```
+G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\
+└─ <MM>\<Cidade>\<ATIVIDADE INDIVIDUAL X>\<AAAA-MM-DD-NOME DO PRODUTOR - RESUMO>\
+   ├─ relatorio.txt   (cabeçalho YAML --- ... ---)
+   └─ relatorio.json  (schema_version 1.0; metadados: data, periodo, hora_inicio, hora_fim, cidade, atividade, produtor_pasta)
+```
+
+- `Get-InboxVisitas` varre os anos (`^\d{4}$`), meses numéricos (`^\d{2}$`, **ignora `_processados`**), e desce `Cidade > Atividade > Produtor`.
+- **Dedup**: agrupa `.txt` + `.json` de mesmo nome base como uma visita; `.json` é a fonte estruturada, `.txt` (YAML) é fallback. Só `.txt`/`.json` (sem `.gdoc`).
+- A `data` vem do `.json`/YAML ou, na falta, do prefixo `AAAA-MM-DD` do nome da pasta.
+- Após confirmar (`S`), `Invoke-CriarPastasEArquivar` grava o `.txt` **sem o bloco YAML** (`Remove-YamlHeader`) e copia o `.json` para a pasta do produtor, e **move** os originais para `_processados\<MM>\<Cidade>\<Atividade>\<leaf>\` (não reprocessa).
+
+### 3c. Auditoria permanente (`runs\`)
+
+`Write-TriagemRun` grava `runs\AAAA-MM-DD_HH-mm-ss__TRIAGEM__triagem-campo.json` (+ `.txt`) com: data/hora, origens `.txt`/`.json` no Drive, caminhos exatos das fotos copiadas do Syncthing, pastas criadas no OneDrive, GPS por produtor (média + contagem) e totais. **`runs\` nunca é apagado** por nenhuma rotina (diferente de `logs\`, que gira 7 dias).
 
 Cidades oficiais (acentuação precisa bater com o OneDrive/Drive): `Barra do Turvo`, `Cananéia`, `Jacupiranga`, `Juquiá`, `Pariquera-Açu`, `Registro`. O WhatsApp chega sem acento (`Cananeia`) — o parser corrige para evitar pasta duplicada.
 
@@ -130,27 +152,29 @@ Regras obrigatórias de normalização:
 Função `Show-RevisaoVisitas`. Depois de ler o JSON e normalizar o sufixo, o script abre uma lista navegável com `[Console]::ReadKey($true)` (setas ↑/↓), mostrando cada visita como:
 
 ```
-[AAAA-MM-DD] Cidade > Atividade > Nome_Pasta_Final
+[AAAA-MM-DD] (periodo / hora_inicio-hora_fim) Cidade > Atividade > Nome_Pasta_Final
 ```
 
-A data exibida é a **data de busca das fotos** (`data`); o nome final já vem com `AAAA-MM-… - RESUMO`.
+A data exibida é a **data de busca das fotos** (`data`); o nome final já vem com `AAAA-MM-DD-… - RESUMO`.
 
 | Tecla | Ação |
 | :--- | :--- |
 | `↑` / `↓` | Navegar na lista |
-| `E` | **Editar** o item selecionado (função `Edit-VisitaItem`), em 4 passos: |
-| | 1. **Data da visita** `AAAA-MM-DD` (a que busca as fotos) — Enter mantém; valida formato. |
-| | 2. **Cidade** — lista numerada `[1] Barra do Turvo … [6] Registro`; Enter mantém. |
-| | 3. **Atividade** — `[1..6] ATIVIDADE INDIVIDUAL 1..6`, `[7] PROJETO PRODUTIVO`; Enter mantém. |
-| | 4. **Nome da pasta** — Enter mantém; garante prefixo `AAAA-MM-` e sufixo ` - RESUMO`. |
+| `E` | **Editar** o item (`Edit-VisitaItem`): |
+| | 1. **Data** `AAAA-MM-DD` (a que busca as fotos) — Enter mantém; valida formato. |
+| | 2. **Período** — `[1] manha`, `[2] tarde`, `[0] limpar`; Enter mantém. |
+| | 3. **Horário** — `hora_inicio`/`hora_fim` `HH:mm` (Enter mantém, `-` limpa). |
+| | 4. **Cidade** — `[1] Barra do Turvo … [6] Registro`; Enter mantém. |
+| | 5. **Atividade** — `[1..6] ATIVIDADE INDIVIDUAL 1..6`, `[7] PROJETO PRODUTIVO`; Enter mantém. |
+| | 6. **Nome da pasta** — Enter mantém; garante prefixo `AAAA-MM-DD-` e sufixo ` - RESUMO`. |
 | `D` / `Delete` | **Remover** o item da lista (não cria a pasta) |
-| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar todas essas pastas no OneDrive? (S/N)"`. `S` cria as pastas que faltam e segue à Etapa 2; `N` volta à lista. |
+| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar as pastas, gravar os relatórios no OneDrive e arquivar na inbox? (S/N)"`. `S` cria/grava/arquiva e segue à Etapa 2; `N` volta à lista. |
 | `Q` / `Esc` | **Cancelar e sair** sem criar nenhuma pasta |
 
 - `try/finally` garante `[Console]::CursorVisible = $true` ao sair.
 - A revisão edita/remove itens **no próprio `$RelatorioDias`** (referências): editar a data muda `$Dia.data` (usado depois no filtro de fotos); remover reconstrói `$Dia.visitas` só com os sobreviventes.
 - Validação anti path-traversal (`Test-CampoSeguro`) rejeita campos com `..`, `/`, `\`, `:` antes de criar pastas.
-- Só após `S` as pastas `Cidade\Atividade\AAAA-MM-PRODUTOR - RESUMO` são criadas no `$OneDriveBase` (`[CRIADA]` / `[JÁ EXISTE]`, log em `triagem-log.txt`).
+- Só após `S`, `Invoke-CriarPastasEArquivar` cria `Cidade\Atividade\AAAA-MM-DD-PRODUTOR - RESUMO` no `$OneDriveBase`, grava o `.txt` limpo + `.json` e move os originais da inbox para `_processados` (`[CRIADA]` / `[JÁ EXISTE]`, log em `triagem-log.txt`).
 
 ---
 
@@ -159,7 +183,7 @@ A data exibida é a **data de busca das fotos** (`data`); o nome final já vem c
 1. **Indexação** (`Get-FotoMetadados`): varre `$SyncthingFotos`, resolve data/hora (EXIF → nome → `LastWriteTime`) e GPS de cada arquivo, com `Write-Progress`. Extensões: `.jpg .jpeg .png .heic .mp4`.
 2. **Filtro por dia**: para cada dia do JSON, seleciona as fotos cujo `DataStr` == `data` (`AAAA-MM-DD`).
 3. **Agrupamento por janela de deslocamento**: fotos do mesmo dia são cortadas em lotes quando o intervalo entre fotos consecutivas passa de **40 min** (`$IntervaloVisitaMinutos`). O deslocamento entre sítios abre essa janela naturalmente → cada visita vira um lote único.
-4. **Distribuição por TAG**: para cada lote mostra horário e produtores do dia; `A`/`B`/`C` manda o lote inteiro à pasta do produtor; `P` pula; `I` classifica foto a foto; `Q` encerra a triagem.
+4. **Pré-sugestão + distribuição por TAG** (`Get-SugestaoTag`): cruza o **horário médio do lote** com `hora_inicio`/`hora_fim` (quando não nulos) ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Se **um único** produtor casa, destaca a sugestão e **`Enter` aceita**; senão digita-se `A`/`B`/`C` (lote inteiro), `P` pula, `I` foto a foto, `Q` encerra.
 5. **GPS** (`Export-CoordenadasTxt`): das fotos copiadas, lê `GPSLatitude/Longitude` (tags EXIF 1–4, racionais → graus decimais) e grava/append `coordenadas_gps.txt` na pasta do produtor com:
    - **ponto médio da propriedade** (média das fotos com GPS);
    - coordenadas decimais (ex. `-24.684120, -47.882340`);
@@ -201,4 +225,74 @@ pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar    # força cola
 1. Rodar com um dia real do relatório, validando: revisão TUI, agrupamento de 40 min, `Copy-Item` e `coordenadas_gps.txt`.
 2. **Validar o parser GPS em fotos reais** — a conversão assume racionais little-endian; EXIF big-endian e fotos sem GPS precisam de teste.
 3. Teste de estresse: dia com 3 produtores e 60+ fotos; dia em que faltou foto de um produtor.
-4. Avaliar limpeza da pasta do Syncthing só se o disco apertar (com confirmação).
+4. ~~Avaliar limpeza da pasta do Syncthing só se o disco apertar (com confirmação).~~ → implementado em `limpar-screenshots.ps1` (seção 11): prints isolados em `Capturas_de_Tela` e limpeza por período com confirmação `APAGAR`.
+
+---
+
+## 11. Isolamento e limpeza de prints (`limpar-screenshots.ps1`)
+
+**Status**: implementado em `limpar-screenshots.ps1` (raiz do projeto). Complementa a triagem: a pasta do Syncthing continua sendo o "negativo" da **câmera** (`Camera\`, intocada); os **prints** são organizados **por aplicativo** dentro da própria pasta nativa `Screenshots` — nenhuma pasta é criada fora de `Camera_Celular` — e prints de **lockscreen** são removidos automaticamente.
+
+### 11.1 Caminhos e modos
+
+| Item | Valor |
+|---|---|
+| `$OrigemSync` | `C:\Users\randomacesso\Sync\Camera_Celular` |
+| `$DestinoBase` | `C:\Users\randomacesso\Sync\Camera_Celular\Screenshots` (pasta nativa; só cria `<App>\ dentro dela) |
+| Modo padrão | **Migra** prints para `$DestinoBase\<NomeDoAplicativo>\` + remove lockscreen + ranking por app + manifesto `runs\` |
+| `-WhatIf` | Simula: ranking por app + lockscreens que seriam removidos, nada alterado, sem manifesto |
+| `-ManterLockscreen` | Não remove lockscreen; organiza-os em `Lockscreen\` |
+| `-LimparAte "AAAA-MM"` | **Apaga** prints de todas as pastas de app cuja data do nome seja ≤ corte (confirmação `APAGAR`) |
+
+**Destino dentro da origem → idempotência obrigatória**: a varredura pula arquivos já organizados em `Screenshots\<App>\` (regex `^Screenshots\\(?!\d{4}\\)[^\\]+\\` sobre o caminho relativo — qualquer subpasta cujo 1º segmento **não** seja ano numérico); sem isso, o critério 1 (`*\Screenshots\*`) re-moveria os mesmos prints a cada execução. Prints **soltos na raiz** de `Screenshots` e os do **layout antigo `AAAA\MM`** (execução anterior) continuam sendo detectados e reorganizados por app; as pastas de ano/mês que ficarem vazias são removidas ao final.
+
+### 11.2 Critérios combinados de detecção (qualquer um basta)
+
+1. Dentro de subpasta `*\Screenshots\*` (qualquer profundidade);
+2. Nome começa com `Screenshot_` (case-insensitive);
+3. `.png` na raiz de `$OrigemSync` ou em `Camera\`/`Restored\`;
+4. Resolução **exata** de tela (`1080x2400` ou `2400x1080`, via `System.Drawing.Image`) **e** sem EXIF de câmera (`Make` tag 271 / `Model` tag 272 vazios).
+
+**Proteções e exclusões da varredura**:
+- O critério 4 nunca se aplica a arquivos `IMG_*` (fotos reais); EXIF de câmera preenchido ou proporção 4:3 jamais casa com a resolução exata de tela.
+- **Ocultos de sistema/Syncthing ignorados**: qualquer segmento do caminho relativo iniciado por ponto — pastas `.stfolder`, `.android`, `.deleteRecord`, `.globalTrash`, `.tmfs` e arquivos `.trashed-*` (lixeira do Syncthing) — via regex `(^|\\)\.`.
+- `~syncthing~*.tmp` (sync em andamento) ignorados; prints já em `Screenshots\<App>\` pulados (idempotência, ver 11.1).
+
+Na validação real (17/11/2026, com o layout antigo `2026\01..11` já populado pela execução anterior): **473 prints** = 471 do layout antigo + 2 novos soltos na raiz (sync ao vivo do celular); **18 lockscreen** (15,3 MB) marcados para remoção automática; **zero** arquivos de `Camera\` (`IMG_*`), `CamScanner\`, `PlantNet\` ou `ScreenRecorder\` detectados.
+
+### 11.3 Classificação por aplicativo e organização
+
+**Extração do app** (`Get-AppDoPrint`): remove a extensão e o sufixo de colisão `__N`, então casa `^Screenshot_[\d_-]+_([A-Za-z].+)$` — o pacote vem após o carimbo de data/hora nos dois formatos reais: `Screenshot_AAAA-MM-DD-HH-mm-ss-fff_<APP>` (Samsung) e `Screenshot_AAAAMMDD_HHMMSS_<APP>`. O capture exige inicial alfabética, então `Screenshot_20261117_213706` (sem app) não confunde o horário com pacote → `Outros`.
+
+**Nome da pasta** (`Get-NomePastaApp`):
+1. Minúsculas + remove o marcador `-edit` final (print editado no Samsung; ex.: `com.android.chrome-edit` → Chrome).
+2. Dicionário `$AppsAmigaveis`: `com.facebook.katana`/`com.facebook.lite` → **Facebook**; `com.linkedin.android` → **LinkedIn**; `com.mercadolibre` → **Mercado Livre**; `com.whatsapp`/`com.whatsapp.w4b` → **WhatsApp**; `com.android.chrome` → **Chrome**; `com.instagram.android` → **Instagram**; `com.google.android.youtube` → **YouTube**; `com.sec.android.app.launcher` → **Tela Inicial**.
+3. Desconhecidos: divide por `.`, descarta o token `android` e os segmentos iniciais genéricos (`com`, `org`, `net`, `br`, `lt`, `eu`, `air`, `jus`, `gov`), capitaliza o 1º segmento restante e sanitiza para Windows (`\/:*?"<>|`, pontos/espaços finais). Ex.: `com.dimep.kairosemployee.br` → **Dimep**; `br.com.maxatacadista` → **Maxatacadista**; `lt.noframe.fieldsareameasure` → **Noframe**; `org.plantnet` → **Plantnet**; `com.android.settings` → **Settings**.
+4. Sem sufixo de app (ou nome vazio após sanitização) → **Outros** (ex.: `image.png` do `Restored\`).
+
+**Lockscreen** (`$AppsLockscreen = lockscreen, com.android.systemui`): removido automaticamente com `Remove-Item -Force` (contagem + MB no console e no manifesto), **salvo** `-WhatIf` ou `-ManterLockscreen` — nestes casos é organizado em `Lockscreen\`.
+
+**Organização**: destino `$DestinoBase\<App>\<nome original>` — como os nomes começam com `Screenshot_AAAA-MM-DD...`, ficam naturalmente ordenados por data dentro de cada pasta. Colisão de nomes ganha sufixo `__2`, `__3`… antes da extensão. Ao final, `Remove-PastasVazias` apaga meses/anos vazios do layout antigo (`2026\01..11`) e pastas de app vazias.
+
+**Data do print** (`Get-DataPrint`, usada no `-LimparAte`): `AAAAMMDD` → `AAAA-MM-DD` no nome (validação de mês/dia + fronteiras de dígito) → fallback `LastWriteTime`.
+
+**Auditoria**: ranking por app (quantidade + MB) no console e manifesto permanente `runs\AAAA-MM-DD_HH-mm-ss__SCREENSHOTS__limpar-screenshots.json` com `totais` (movidos + lockscreen removidos), `por_aplicativo`, `lockscreen_removidos` e cada `origem → destino` + app + critério + bytes.
+
+### 11.4 Limpeza por corte temporal (`-LimparAte`)
+
+1. Valida o formato `AAAA-MM` (`ValidatePattern`).
+2. Varre **todas as pastas de aplicativo** em `$DestinoBase` (recursivo, ignorando ocultos/`.trashed-*`/`~syncthing~*.tmp`; alcança também o layout antigo `AAAA\MM` e a raiz) e seleciona os prints cuja **data extraída do nome** (fallback `LastWriteTime`) tenha chave `AAAA-MM` **≤** ao corte (comparação de string).
+3. Lista os alvos agrupados por pasta (arquivos + MB) e o total; avisa em vermelho que **o Syncthing espelhará a remoção no celular**.
+4. Exige `Read-Host` com resposta **exata** `APAGAR` (case-sensitive); qualquer outra coisa cancela.
+5. `Remove-Item -Force` em cada arquivo e, ao final, `Remove-PastasVazias` (pastas de app que ficaram vazias + meses/anos do layout antigo). `-WhatIf` lista sem pedir confirmação e sem remover.
+
+### 11.5 Decisões congeladas
+
+- **Destino na pasta nativa `Screenshots`, por app** — nenhuma pasta nova fora de `Camera_Celular` (o Syncthing já espelha essa pasta com o celular); só as subpastas `<App>\` são criadas. `Camera\` permanece intacta.
+- **Ordenação por data vem de graça** — os nomes `Screenshot_AAAA-MM-DD...` já ordenam cronologicamente dentro de cada pasta de app; não precisa de hierarquia `AAAA\MM` (o layout antigo é absorvido e as pastas vazias removidas).
+- **Lockscreen é lixo** — `lockscreen`/`com.android.systemui` some automaticamente (18 prints/15,3 MB na validação); `-ManterLockscreen` é a válvula de escape para auditoria.
+- **Re-execução idempotente** — prints já em `Screenshots\<App>\` são pulados na varredura; rodar de novo só organiza os novos/soltos (o sync ao vivo do celular entrega prints novos na raiz entre execuções).
+- **`-LimparAte` pela data do nome, não pela pasta** — com a organização por app, o corte temporal varre todas as pastas de app e compara a data extraída do arquivo; continua funcionando mesmo antes de migrar o layout antigo.
+- **Critério 4 conservador** — só resolução exata + EXIF vazio + nome não `IMG_*`; na dúvida, o arquivo fica na origem.
+- **Ocultos e `.trashed-*` ignorados** — pastas de sistema/Syncthing (`.stfolder`, `.android`, `.deleteRecord`, `.globalTrash`, `.tmfs`) e a lixeira `.trashed-*` não entram na migração nem na contagem.
+- **Confirmação `APAGAR`** — remoção é destrutiva e espelhada no celular; nunca automática.

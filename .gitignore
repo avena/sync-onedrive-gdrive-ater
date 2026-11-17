@@ -1,5 +1,7 @@
-# Logs de sincronização (podem conter caminhos de clientes)
+# Logs técnicos do rclone (giram a cada 7 dias; podem conter caminhos de clientes)
 logs/
+*.log
+*.tmp
 
 # Nunca versionar credenciais do rclone
 rclone.conf
@@ -10,3 +12,6 @@ rclone.conf
 # Runtime da triagem de campo (log e dados de visitas do usuário)
 triagem-log.txt
 visitas.json
+
+# ATENÇÃO: runs/ é PERMANENTE e versionado (manifestos de auditoria .json/.txt).
+# Nenhuma rotina de limpeza apaga runs/. Não ignorar runs/.

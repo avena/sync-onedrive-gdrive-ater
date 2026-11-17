@@ -85,6 +85,24 @@ Aplicadas as correções (alta+média) e commit/push de todos os arquivos. `.git
 - `start-sync.ps1`: regra idempotente `- RESUMO` confirmada.
 - Documentação consolidada em `.plan/` (`Espelhamento-de-Pastas-no-Drive.md`, `Triagem-de-Fotos-no-Campo.md`, `historico-prompts.md`); `README.md` atualizado para apontar para `.plan/`.
 
+### C7. Prompt Mestre consolidado (`.plan/Relato_Drive_Triagem.md`) — inbox espelhada + runs\ (versão atual)
+> "Vamos ver esse plano e aplicar ele… a skill vai gerar uma nova estrutura e a gente vai copiar essa estrutura no OneDrive e depois escanear as fotos… me deixa no README descrito onde eu tenho que salvar as fotos que eu vou sincronizar." → escopo escolhido: **Plano completo (Prompt Mestre)**.
+
+Aplicado integralmente (após auditoria prévia exigida pelo plano):
+- `triagem-campo.ps1`:
+  - **Fonte primária inbox espelhada** `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<Atividade>\<AAAA-MM-DD-NOME - RESUMO>\` (`Get-InboxVisitas`); varre anos, ignora `_processados`; **dedup** `.txt`+`.json` por nome base; `.json` `schema_version 1.0` como fonte de metadados; fallback `.txt` YAML / `visitas.json` / colagem.
+  - Prefixo da pasta passa a **dia completo** `AAAA-MM-DD-` (`Format-NomePastaProdutor -Data`); `data` continua só para buscar fotos.
+  - Revisão TUI: `[E]` edita data/período/horário/cidade/atividade/nome; confirmação grava `.txt` **sem YAML** (`Remove-YamlHeader`) + `.json` e **move originais para `_processados`** (`Invoke-CriarPastasEArquivar`).
+  - Etapa 2: **pré-sugestão** por `hora_inicio`/`hora_fim` ou `periodo` (`manha`/`tarde`), **`Enter` aceita** (`Get-SugestaoTag`).
+  - **Manifesto `runs\`** (`Write-TriagemRun`): origens, fotos copiadas, pastas, GPS, contagens.
+- `start-sync.ps1`:
+  - **`--exclude "*.json"`** (`.json` fica só local/OneDrive).
+  - Regex remove **dia completo** também: `^(\d{4}-\d{2}(-\d{2})?-|\d+\s*-\s*)`.
+  - **URLs do Drive** só das pastas atualizadas via `rclone lsjson --dirs-only` com cache (`Get-DriveFolderUrl`) + **manifesto `runs\`** (`Write-SyncRun`, escopos `TODAS`/`CIDADE_*`/`SELETOR`/`AUTO`).
+- `runs/` criada (permanente, versionada, `.gitkeep`); `.gitignore` ignora `logs/`, `*.log`, `*.tmp`.
+- `README.md`: seção **"Onde salvar as fotos e os relatórios"** (Syncthing `C:\Users\randomacesso\Sync\Camera_Celular\Camera` + inbox `G:\Meu Drive`), fluxo ponta a ponta e estrutura com `runs\`.
+- `self-check.ps1`: testes de `Remove-YamlHeader`, `Read-MetadadosTxt`, `ConvertTo-Minutos`, `Get-SugestaoTag`, `ConvertTo-RelatorioDias`, `Format-NomePastaProdutor -Data` e regex de dia completo.
+
 ---
 
 ## D. Regras de ouro acumuladas (referência rápida)
@@ -93,7 +111,11 @@ Aplicadas as correções (alta+média) e commit/push de todos os arquivos. `.git
 2. **`--drive-shared-with-me`** e Shared Drive = `n` (pasta em "Compartilhados comigo").
 3. **Hierarquia invertida**: OneDrive `Cidade>Atividade>Produtor` → Drive `Atividade>Cidade>Produtor - RESUMO`.
 4. **`- RESUMO` idempotente** nos dois scripts (case-insensitive, sem duplicar).
-5. **`data` (dia) só para buscar fotos; pasta só ano/mês.**
+5. **`data` (dia) só para buscar fotos; pasta usa prefixo de dia completo `AAAA-MM-DD-` + ` - RESUMO`.**
 6. **`ignorados.json` por caminho relativo completo** (nunca nome isolado do produtor).
 7. **Copiar, não mover** as fotos do Syncthing (negativo da câmera).
 8. **Token OAuth nunca commitado** (`rclone.conf` no `.gitignore`).
+9. **`.json` fica só local/OneDrive** (`--exclude "*.json"` no rclone); sobem `.txt`, fotos e `coordenadas_gps.txt`.
+10. **Inbox espelhada é a fonte primária**; originais processados vão para `_processados` (não reprocessa).
+11. **`runs\` é permanente e versionado** (manifestos de auditoria); só `logs\` gira 7 dias.
+12. **URLs do Drive só das pastas atualizadas** (lsjson com cache, economia de API).

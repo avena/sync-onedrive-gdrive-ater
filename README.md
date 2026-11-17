@@ -9,6 +9,54 @@ Sincronizador unidirecional para copiar pastas de produtores rurais do **OneDriv
 - **Modo**: `rclone copy --update` — **nunca apaga** arquivos no destino (protege alterações da equipe)
 - **Autenticação**: OAuth via `rclone config` (remote `gdrive_saconsult`)
 - **Exceções**: pastas listadas em `ignorados.json` são puladas em todas as rotinas
+- **`.json` fica só local**: o `start-sync.ps1` usa `--exclude "*.json"` — sobem ao Drive apenas `.txt`, fotos e `coordenadas_gps.txt`
+
+## 📍 Onde salvar as fotos e os relatórios (IMPORTANTE)
+
+O fluxo tem **duas entradas** que você precisa alimentar antes de rodar os scripts:
+
+### 1. Fotos do celular → pasta do Syncthing
+Salve/sincronize as fotos do campo na pasta do **Syncthing** no PC:
+
+```
+C:\Users\randomacesso\Sync\Camera_Celular\Camera
+```
+
+- É a variável **`$SyncthingFotos`** no topo do `triagem-campo.ps1` (ajuste se a sua pasta tiver outro nome/caminho).
+- No celular, o Syncthing sincroniza `DCIM/Camera` em modo **Enviar apenas** para essa pasta.
+- Estrutura real do Syncthing: `Sync\Camera_Celular\` contém `Camera\` (fotos da câmera, `IMG_AAAAMMDD_HHMMSS.jpg`), `Screenshots\`, `CamScanner\`, `PlantNet\`, `Restored\`, `ScreenRecorder\`. O script usa **só `Camera\`** (as fotos de campo); os `~syncthing~*.tmp` (sync em andamento) são ignorados.
+- **Ative as tags de localização/GPS na câmera** do celular — o script lê o GPS do EXIF para gerar `coordenadas_gps.txt`.
+- O script **filtra as fotos pelo dia exato** (`data` `AAAA-MM-DD` do relatório), comparando com o EXIF `DateTimeOriginal`, o padrão `AAAAMMDD` do nome do arquivo ou o `LastWriteTime`.
+- As fotos são **copiadas** (não movidas) — a pasta do Syncthing continua sendo o "negativo" da câmera.
+
+### 2. Relatórios (.txt/.json) → inbox espelhada do Google Drive pessoal
+A skill `relatorio-ater-anater` gera a estrutura de relatórios na **inbox** do seu Google Drive pessoal (unidade `G:`):
+
+```
+G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<ATIVIDADE INDIVIDUAL X>\<AAAA-MM-DD-NOME DO PRODUTOR - RESUMO>\
+    ├── relatorio.txt    (com cabeçalho YAML --- ... ---)
+    └── relatorio.json   (schema_version 1.0, metadados: data, periodo, hora_inicio, hora_fim, cidade, atividade, produtor_pasta)
+```
+
+- É a variável **`$InboxBase`** no topo do `triagem-campo.ps1` (padrão `G:\Meu Drive`).
+- O `triagem-campo.ps1` varre os anos disponíveis, **ignora `_processados`**, e agrupa o `.txt` + `.json` de mesmo nome base como **uma única visita**.
+- Após confirmar, os originais são **movidos para `_processados\<MM>\<Cidade>\<Atividade>\`** (não reprocessa na próxima execução).
+- **Fallback**: se a inbox estiver vazia/ausente, o script usa `visitas.json` na raiz ou a colagem manual no terminal (`FIM` encerra).
+
+### Fluxo ponta a ponta
+
+```
+Relato / Áudio
+   └─ Skill relatorio-ater-anater  →  G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\  (.txt + .json)
+ Fotos do celular  →  Syncthing  →  C:\Users\randomacesso\Sync\Camera_Celular\Camera
+   └─ triagem-campo.ps1
+        ├─ Etapa 1: revisão TUI → cria pastas no OneDrive + grava .txt limpo/.json + arquiva _processados
+        └─ Etapa 2: filtra fotos por dia, agrupa 40 min, pré-sugere produtor (Enter), copia fotos + coordenadas_gps.txt
+             └─ OneDrive: ...\Fernando\<Cidade>\<Atividade>\<AAAA-MM-DD-Produtor - RESUMO>
+                  └─ start-sync.ps1 (rclone copy --update --exclude *.json)
+                       └─ Google Drive SA Consultoria: VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>
+                            └─ runs\ : manifesto com caminho local + URL clicável de cada pasta atualizada
+```
 
 ## 🚀 Como Executar
 
@@ -112,11 +160,16 @@ Execute a opção **[9]** no menu do script (ou rode `rclone config` no terminal
 C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ├── start-sync.ps1              # Script principal (menu + modo -Auto)
 ├── triagem-campo.ps1           # Triagem de fotos Syncthing -> OneDrive (revisão interativa + GPS)
+├── limpar-screenshots.ps1      # Organiza prints por app em Screenshots\<App> + remove lockscreen + limpeza por período
 ├── visitas.json                # Visitas do dia geradas do relatório WhatsApp (opcional; ou colar no terminal)
 ├── ignorados.json              # Pastas que nunca devem ser sincronizadas (criado ao usar [I])
 ├── self-check.ps1              # Verificação rápida das regras de nome, idempotência e ignorados
 ├── triagem-log.txt             # Log de auditoria da triagem (gerado em runtime)
-├── logs\                       # Logs de cada execução (sync_YYYY-MM-DD_HH-mm-ss.log)
+├── logs\                       # Logs técnicos do rclone (giram a cada 7 dias)
+├── runs\                       # Manifestos de auditoria PERMANENTES (nunca apagar; versionados)
+│   ├── ...__TRIAGEM__triagem-campo.json / .txt   # origens, fotos copiadas, pastas, GPS
+│   ├── ...__SCREENSHOTS__limpar-screenshots.json # prints isolados (origem -> destino, critério, bytes)
+│   └── ...__<ESCOPO>__start-sync.json / .txt     # caminho local + URL Drive das pastas atualizadas
 ├── .plan\                      # Documentação de planejamento e histórico (oculta/dedicada)
 │   ├── Espelhamento-de-Pastas-no-Drive.md  # Arquitetura final do start-sync.ps1
 │   ├── Triagem-de-Fotos-no-Campo.md        # Arquitetura completa do triagem-campo.ps1
@@ -134,18 +187,22 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 As pastas no OneDrive costumam vir com prefixo de data ou número (`2026-11-RICARDO ISHIDA`, `03 - Rafael Souza`). No destino o prefixo é removido por regex e o sufixo ` - RESUMO` é acrescentado **de forma idempotente**:
 
 ```powershell
-$Limpo = $NomeLocal -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''
+$Limpo = $NomeLocal -replace '^(\d{4}-\d{2}(-\d{2})?-|\d+\s*-\s*)', ''
 # Se já termina em "- RESUMO" (case-insensitive), preserva; senão acrescenta.
 if ($Limpo -match '\s*-\s*RESUMO$') { $NomeDrive = $Limpo } else { $NomeDrive = "$Limpo - RESUMO" }
 
-# 2026-11-RICARDO ISHIDA              ->  RICARDO ISHIDA - RESUMO
-# 03 - Rafael Souza                   ->  Rafael Souza - RESUMO
-# 2026-11-OSMAR - ITAPITANGUI - RESUMO ->  OSMAR - ITAPITANGUI - RESUMO  (sem duplicar)
+# 2026-11-RICARDO ISHIDA                 ->  RICARDO ISHIDA - RESUMO
+# 2026-11-12-OSMAR - ITAPITANGUI - RESUMO ->  OSMAR - ITAPITANGUI - RESUMO  (dia completo, sem duplicar)
+# 03 - Rafael Souza                      ->  Rafael Souza - RESUMO
 ```
 
 **Regra idempotente para `- RESUMO`**: pastas antigas (sem o sufixo) recebem ` - RESUMO`; pastas já criadas pelo `triagem-campo.ps1` (que já vêm com ` - RESUMO`) são preservadas como estão — **nunca** vira `- RESUMO - RESUMO`. A verificação é case-insensitive (`- RESUMO`, `-RESUMO`, `- resumo` contam como já presentes).
 
 Isso vale para **todas** as rotinas: `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`. Cada pasta de produtor é uma tarefa `rclone copy` independente (`.../FERNANDO/<Atividade>/<Cidade>/<Produtor> - RESUMO`), então o seletor `[4]` mostra o mapeamento ao lado do nome local:
+
+### URLs do Drive em `runs\` (só pastas atualizadas)
+
+Ao final de `[2]`, `[3]`, `[4]` ou `-Auto`, o script identifica **apenas** as pastas que tiveram arquivos copiados/atualizados naquela execução e, só para essas, consulta o ID via `rclone lsjson --dirs-only --drive-shared-with-me` (com cache por pasta pai, economizando API). Grava `runs\AAAA-MM-DD_HH-mm-ss__<ESCOPO>__start-sync.json` (+ `.txt` com links clicáveis) mapeando cada produtor ao **caminho local** (`C:\Users\...`) e à **URL direta** `https://drive.google.com/drive/folders/<ID>`. Escopos: `TODAS`, `CIDADE_<nome>`, `SELETOR`, `AUTO`. Dry-run não gera manifesto.
 
 ```
   [4] Jacupiranga  >  ATIVIDADE INDIVIDUAL 1
@@ -163,16 +220,20 @@ pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1"          # lê visitas.
 pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar    # força colar o JSON no terminal (FIM encerra)
 ```
 
-### Sufixo `- RESUMO` automático
+### Fonte primária: inbox espelhada (`.txt` + `.json`)
 
-Ao ler o JSON (de `visitas.json` ou colado), cada `produtor_pasta` é normalizado para terminar em ` - RESUMO` (verificação **case-insensitive** e idempotente):
+O script varre `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\` (ignorando `_processados`), agrupa o `.txt` + `.json` de mesmo nome base como uma visita e usa o `.json` (`schema_version 1.0`) como fonte de metadados (`data`, `periodo`, `hora_inicio`, `hora_fim`, `cidade`, `atividade`, `produtor_pasta`). Fallback: `.txt` com YAML, `visitas.json` manual ou colagem. Só trata `.txt`/`.json` (sem `.gdoc`).
+
+### Nome da pasta: prefixo `AAAA-MM-DD-` + sufixo `- RESUMO`
+
+Cada `produtor_pasta` é normalizado para o prefixo de **dia completo** e sufixo ` - RESUMO` (case-insensitive, idempotente):
 
 ```
-2026-11-OSMAR - ITAPITANGUI   ->  2026-11-OSMAR - ITAPITANGUI - RESUMO
-2026-11-MARIA DAS GRAÇAS      ->  2026-11-MARIA DAS GRAÇAS - RESUMO
+OSMAR - ITAPITANGUI (data 2026-11-12)  ->  2026-11-12-OSMAR - ITAPITANGUI - RESUMO
+2026-11-MARIA DAS GRAÇAS               ->  2026-11-12-MARIA DAS GRAÇAS - RESUMO
 ```
 
-Assim a pasta local já nasce com o mesmo nome que o `start-sync.ps1` espera no Drive (sem duplicar o sufixo).
+O `start-sync.ps1` remove esse prefixo (dia completo ou ano-mês) ao montar o nome no Drive, então a pasta local e o destino ficam consistentes sem duplicar o sufixo.
 
 ### Separação explícita das datas
 
@@ -186,16 +247,42 @@ Antes de tocar no disco, o script abre uma lista navegável com `[Console]::Read
 | Tecla | Ação |
 | :--- | :--- |
 | `↑` / `↓` | Navegar na lista |
-| `E` | **Editar** o item em 4 passos: **data da visita** `AAAA-MM-DD` (Enter mantém), cidade (lista numerada `1–6`), atividade (`1–6` + `7 PROJETO PRODUTIVO`), nome da pasta (Enter mantém o atual em cada passo; o nome sempre volta a ter prefixo `AAAA-MM-` e sufixo ` - RESUMO`) |
+| `E` | **Editar** o item: **data** `AAAA-MM-DD`, **período/horário** (`manha`/`tarde`, `hora_inicio`/`hora_fim`), **cidade** (`1–6`), **atividade** (`1–6` + `7 PROJETO PRODUTIVO`), **nome da pasta** (Enter mantém em cada passo; sempre volta a ter prefixo `AAAA-MM-DD-` e sufixo ` - RESUMO`) |
 | `D` / `Delete` | **Remover** o item selecionado da lista (não cria a pasta) |
-| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar todas essas pastas no OneDrive? (S/N)"`. `S` cria as pastas que faltam e segue para a triagem de fotos; `N` volta à lista |
+| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar as pastas, gravar os relatórios no OneDrive e arquivar na inbox? (S/N)"`. `S` cria as pastas, grava os relatórios e arquiva; `N` volta à lista |
 | `Q` / `Esc` | **Cancelar e sair** sem criar nenhuma pasta |
 
-`try/finally` garante que `[Console]::CursorVisible` volte a `$true` ao sair. Só depois da confirmação (`S`) as pastas `Cidade\Atividade\AAAA-MM-PRODUTOR - RESUMO` são criadas no `$OneDriveBase`.
+`try/finally` garante que `[Console]::CursorVisible` volte a `$true` ao sair. Só depois da confirmação (`S`):
+- cria `Cidade\Atividade\AAAA-MM-DD-PRODUTOR - RESUMO` no `$OneDriveBase`;
+- grava o **`.txt` limpo** (remove o bloco YAML `---…---` do topo, pronto para colar no Word) e copia o **`.json`** irmão para a pasta do produtor (ambos ficam locais/OneDrive);
+- **move** os originais da inbox para `_processados\<MM>\<Cidade>\<Atividade>\` (não reprocessa).
 
-### Etapa 2 — Triagem de fotos + GPS
+### Etapa 2 — Triagem inteligente de fotos + GPS
 
-Depois de criar as pastas, o script indexa as fotos do Syncthing (`$SyncthingFotos`), agrupa por data + bloco de horário (intervalo de 40 min) e distribui por tag (`A`/`B`/`C`, `P` pular, `I` foto a foto, `Q` sair). Para cada lote copiado, extrai o GPS EXIF e gera `coordenadas_gps.txt` na pasta do produtor. Auditoria em `triagem-log.txt`.
+Depois de criar as pastas, o script indexa as fotos do Syncthing (`$SyncthingFotos`), filtra pelo dia exato (`data`), agrupa por bloco de horário (intervalo de 40 min) e **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `Q` sair). Para cada lote copiado, extrai o GPS EXIF e gera `coordenadas_gps.txt`.
+
+### Auditoria permanente (`runs\`)
+
+Ao finalizar, grava `runs\AAAA-MM-DD_HH-mm-ss__TRIAGEM__triagem-campo.json` (+ `.txt` legível) com: origens `.txt`/`.json` no Drive, caminhos exatos das fotos copiadas do Syncthing, pastas criadas no OneDrive, coordenadas GPS e contagens. **`runs\` nunca é apagado** (diferente de `logs\`). Auditoria textual também em `triagem-log.txt`.
+
+## 🧹 Isolamento e Limpeza de Prints (`limpar-screenshots.ps1`)
+
+Script separado que **organiza** as capturas de tela (prints) do Android **por aplicativo** dentro da própria pasta nativa `Screenshots` — nenhuma pasta é criada fora de `Camera_Celular` —, **remove prints de lockscreen automaticamente** e permite apagar prints antigos por período. Arquitetura em [`.plan/Triagem-de-Fotos-no-Campo.md`](.plan/Triagem-de-Fotos-no-Campo.md) (seção 11).
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File ".\limpar-screenshots.ps1" -WhatIf              # simula: ranking por app + lockscreens
+pwsh -ExecutionPolicy Bypass -File ".\limpar-screenshots.ps1"                      # organiza por app + remove lockscreen
+pwsh -ExecutionPolicy Bypass -File ".\limpar-screenshots.ps1" -ManterLockscreen    # mantém lockscreen em Lockscreen\
+pwsh -ExecutionPolicy Bypass -File ".\limpar-screenshots.ps1" -LimparAte "2026-09" # apaga prints até set/2026 (pede APAGAR)
+```
+
+- **Origem**: `C:\Users\randomacesso\Sync\Camera_Celular` · **Destino**: `...\Screenshots\<NomeDoAplicativo>\` (os nomes `Screenshot_AAAA-MM-DD...` já ordenam por data dentro de cada pasta). Inclui prints do layout antigo `Screenshots\AAAA\MM`; as pastas de ano/mês vazias são removidas ao final.
+- **Detecção de print** (qualquer critério basta): dentro de `*\Screenshots\*`; nome começa com `Screenshot_`; `.png` na raiz/`Camera\`/`Restored\`; resolução exata de tela (`1080x2400`/`2400x1080`) **sem** EXIF de câmera (`Make`/`Model`). Fotos reais `IMG_*` com EXIF de câmera ou proporção 4:3 **nunca** são movidas.
+- **Classificação por app**: pacote extraído após o carimbo de data/hora (`Screenshot_AAAA-MM-DD-HH-mm-ss-fff_<APP>` ou `Screenshot_AAAAMMDD_HHMMSS_<APP>`), ignorando colisão `__2`/`__3` e o marcador `-edit` do Samsung. Conhecidos → `Facebook`, `LinkedIn`, `Mercado Livre`, `WhatsApp`, `Chrome`, `Instagram`, `YouTube`, `Tela Inicial`; desconhecidos → remove prefixos genéricos (`com.`, `br.com.`, `org.`, `lt.`, `eu.`, `air.`, `jus.`…) e o token `.android`, capitaliza o 1º segmento (ex.: `com.dimep.kairosemployee.br` → `Dimep`), sanitizado para Windows. Sem sufixo de app → `Outros`.
+- **Lockscreen**: app `lockscreen` ou `com.android.systemui` é **removido automaticamente** (contagem + MB no console e no manifesto), salvo com `-WhatIf` ou `-ManterLockscreen` (nestes casos vai para `Lockscreen\`).
+- **Ignorados na varredura**: ocultos de sistema/Syncthing (`.stfolder`, `.android`, `.deleteRecord`, `.globalTrash`, `.tmfs`, `.trashed-*` — qualquer nome iniciado por ponto), `~syncthing~*.tmp` e prints **já organizados** em `Screenshots\<App>\` (re-execução idempotente; prints soltos na raiz e no layout antigo `AAAA\MM` continuam sendo organizados).
+- **Auditoria**: ranking de pastas por app (quantidade + MB) e manifesto `runs\AAAA-MM-DD_HH-mm-ss__SCREENSHOTS__limpar-screenshots.json` (`por_aplicativo`, `lockscreen_removidos`, cada `origem → destino`). `-WhatIf` não altera nada e não gera manifesto.
+- **`-LimparAte "AAAA-MM"`**: varre **todas as pastas de aplicativo** e seleciona prints cuja data extraída do nome (`AAAAMMDD`/`AAAA-MM-DD`, fallback `LastWriteTime`) tenha chave `AAAA-MM` **≤** ao corte; lista por pasta (arquivos + MB), avisa que **o Syncthing espelhará a remoção no celular** e só remove após digitar **`APAGAR`**. Pastas que ficarem vazias (apps e anos/meses antigos) são removidas ao final.
 
 ## 🚫 Nunca sincronizar (`ignorados.json`)
 
@@ -316,6 +403,9 @@ pwsh -ExecutionPolicy Bypass -File ".\start-sync.ps1"
 
 # 5. Verifica as regras de renomeação e de ignorados (usar antes de commitar)
 pwsh -NoProfile -File ".\self-check.ps1"
+
+# 6. Simula a detecção de prints do Android (não move nada)
+pwsh -NoProfile -File ".\limpar-screenshots.ps1" -WhatIf
 ```
 
 ## 🐛 Troubleshooting

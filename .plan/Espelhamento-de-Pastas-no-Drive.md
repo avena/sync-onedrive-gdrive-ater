@@ -38,7 +38,8 @@ Google Drive (nuvem):
 
 - Regra de ouro: **`rclone copy --update`** — copia novos e atualiza mais recentes; **NUNCA apaga** nada no destino.
 - **Nunca usar `rclone sync`** (apagaria arquivos que outros técnicos colocaram no Drive).
-- Flags principais: `--update --transfers=4 --checkers=8 --drive-shared-with-me --stats-one-line --stats=2s -v`.
+- Flags principais: `--update --exclude *.json --transfers=4 --checkers=8 --drive-shared-with-me --stats-one-line --stats=2s -v`.
+- **`--exclude "*.json"`**: os `.json` estruturados ficam **apenas** no OneDrive/PC local; sobem ao Drive só `.txt`, fotos e `coordenadas_gps.txt`.
 - Rede instável (campo): `--retries=3 --retries-sleep=10s --contimeout=30s`.
 - Cada pasta de produtor é uma tarefa `rclone copy` independente, sempre com `--log-file` (o `-v` escreve em stderr; no PS 5.1 isso viraria erro vermelho se capturado pelo pipeline).
 
@@ -49,9 +50,9 @@ Google Drive (nuvem):
 Função `Get-NomeResumo`:
 
 ```powershell
-$Limpo = $Nome -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''   # remove prefixo de ano/mês ou número
-if ($Limpo -match '\s*-\s*RESUMO$') { return $Limpo }       # já tem - RESUMO (case-insensitive): preserva
-return "$Limpo - RESUMO"                                    # pasta antiga: acrescenta
+$Limpo = $Nome -replace '^(\d{4}-\d{2}(-\d{2})?-|\d+\s*-\s*)', ''  # remove dia completo, ano/mês ou número
+if ($Limpo -match '\s*-\s*RESUMO$') { return $Limpo }              # já tem - RESUMO (case-insensitive): preserva
+return "$Limpo - RESUMO"                                           # pasta antiga: acrescenta
 ```
 
 - Remove o prefixo de data/número do início (`2026-11-…` ou `03 - …`).
@@ -87,6 +88,17 @@ Função `Show-ProdutoresSelector` — TUI nativa com `[Console]::ReadKey($true)
 - Guarda **só o caminho relativo completo** `Cidade\Atividade\NomePastaProdutor` (nunca o nome isolado do produtor — a mesma pessoa pode existir em outra atividade).
 - Consultado por `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`, que pulam as entradas e informam quantas foram ignoradas.
 - Exemplo: `["Jacupiranga\\ATIVIDADE INDIVIDUAL 1\\2026-11-RICARDO ISHIDA"]`.
+
+---
+
+## 5b. URLs do Drive em `runs\` (só pastas atualizadas)
+
+- Ao final de `[2]`, `[3]`, `[4]` ou `-Auto`, `Write-SyncRun` identifica **apenas** as pastas com arquivos efetivamente copiados/atualizados (`Copiados + Atualizados > 0`).
+- Só para essas, `Get-DriveFolderUrl` consulta o ID via `rclone lsjson <pai> --dirs-only --drive-shared-with-me --quiet`, com **cache por pasta pai** (`$Script:DriveDirCache`) para economizar chamadas de API.
+- Monta a URL clicável `https://drive.google.com/drive/folders/<ID>`.
+- Grava `runs\AAAA-MM-DD_HH-mm-ss__<ESCOPO>__start-sync.json` (+ `.txt` legível com links) mapeando cada produtor ao **caminho local** (`C:\Users\...`) e à **URL no Drive** da SA Consultoria.
+- Escopos: `TODAS` (`[2]`), `CIDADE_<nome>` (`[3]`), `SELETOR` (`[4]`), `AUTO` (`-Auto`). **Dry-run não gera manifesto.**
+- `runs\` é **permanente e versionado** — nenhuma rotina de limpeza o apaga (diferente de `logs\`, que gira 7 dias).
 
 ---
 
