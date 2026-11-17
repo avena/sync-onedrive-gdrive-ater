@@ -20,15 +20,10 @@ winget install --id Microsoft.PowerShell --source winget
 # (preferência: Scoop; fallback: winget)
 scoop install rclone
 # ou: winget install --id Rclone.Rclone --source winget
-
-# Configurar remote do Google Drive (conta da consultoria)
-rclone config
-# name: gdrive_saconsult
-# storage: drive
-# scope: 1 (full access)
-# use web browser: y
-# login com fernandoavena.saconsult@gmail.com
 ```
+
+> Depois de instalar, configure o remote do Google Drive — veja
+> **[Configurar o Remote do Google Drive](#configurar-o-remote-do-google-drive-rclone-config)**.
 
 ### Execução Manual (Menu Interativo)
 ```powershell
@@ -74,6 +69,42 @@ Disable-ScheduledTask -TaskName "Sync_ATER_OneDrive_GDrive"
 # ou: Unregister-ScheduledTask -TaskName "Sync_ATER_OneDrive_GDrive" -Confirm:$false
 ```
 
+## 🔐 Configurar o Remote do Google Drive (`rclone config`)
+
+Execute a opção **[9]** no menu do script (ou rode `rclone config` no terminal) e responda exatamente nesta ordem:
+
+| Prompt do Rclone | Resposta | Observação |
+| :--- | :--- | :--- |
+| `n/s/q>` | `n` | Criar novo remote |
+| `name>` | `gdrive_saconsult` | Deve ser exatamente este nome |
+| `Storage>` | `24` (ou `drive`) | Google Drive |
+| `client_id>` | *(Enter vazio)* | Usa o ID padrão (ou cole o seu do Google Cloud) |
+| `client_secret>` | *(Enter vazio)* | Deixe vazio se não usou `client_id` próprio |
+| `scope>` | `1` | Acesso total (`drive`) |
+| `service_account_file>` | *(Enter vazio)* | Não utilizado |
+| `Edit advanced config?` | `n` | Pula configurações avançadas |
+| `Continue using the shared client_id anyway?` | `y` | Confirma uso do ID padrão do rclone |
+| `Use web browser to automatically authenticate?` | `y` | **Logar com `fernandoavena.saconsult@gmail.com` no navegador** |
+| `Configure this as a Shared Drive (Team Drive)?` | `n` | **Sempre `n`** (a pasta está em *Compartilhados comigo*, não é Team Drive corporativo) |
+| `Keep this "gdrive_saconsult" remote?` | `y` | Salva em `%APPDATA%\rclone\rclone.conf` |
+| `e/n/d/r/c/s/q>` | `q` | Fecha o configurador |
+
+### Por que cada resposta
+
+- **`client_id`/`client_secret` vazios** → usa a chave compartilhada padrão do rclone. O Google vai aposentar esse ID compartilhado em 2026; funciona hoje, mas no futuro vale criar o seu próprio no Google Cloud.
+- **`scope 1`** → acesso completo, necessário para ler e gravar nas pastas compartilhadas com você.
+- **`service_account_file`** → só para robôs de servidor sem login interativo. Não é o nosso caso.
+- **`Shared Drive (Team Drive)?` = `n`** → Shared Drive é recurso exclusivo de contas Google Workspace pagas. A pasta `VALE DO RIBEIRA` é uma pasta comum da aba *Compartilhados comigo* de uma conta `@gmail.com`.
+
+> **Errou o Shared Drive?** Entre em `[9]` → `e` (Edit) → `1` (`gdrive_saconsult`) → vá dando Enter até `Configure this as a Shared Drive?` e mude para `n`.
+
+### Checklist Pós-Configuração (Validação)
+
+1. Rode a opção **[7]** (`Testar conexão com Google Drive`) para confirmar acesso a `VALE DO RIBEIRA/FERNANDO`.
+2. Rode a opção **[4]** (`Mostrar pastas locais encontradas`) para conferir os pares `Cidade\Atividade` no OneDrive.
+3. Rode a opção **[1]** (`Dry-Run`) para simular a cópia antes de transferir arquivos reais.
+4. Rode a opção **[2]** (`Sincronizar AGORA`) para executar a primeira sincronização.
+
 ## 📁 Estrutura do Projeto
 
 ```
@@ -118,13 +149,14 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ## 🔧 Configurações Importantes (edite no `start-sync.ps1`)
 
 ```powershell
-# Linha 78: Caminho base do seu OneDrive local
+# Linha 17: Caminho base do seu OneDrive local
 $OrigemBase = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando"
 
-# Linha 79: Remote + pasta no Google Drive
-$RemotoDrive = "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO"
+# Linhas 18-19: nome do remote e pasta no Google Drive
+$NomeRemoto  = "gdrive_saconsult"
+$RemotoDrive = "${NomeRemoto}:VALE DO RIBEIRA/FERNANDO"
 
-# Linhas 101-114: Cidades e Atividades monitoradas
+# Linhas 24-38: Cidades e Atividades monitoradas
 $Cidades = @("Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro")
 $Atividades = @("ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3")
 ```
@@ -164,6 +196,19 @@ pwsh -ExecutionPolicy Bypass -File ".\start-sync.ps1"
 | `Failed to get token` | Rode `rclone config` novamente e refaça login com a conta da consultoria |
 | Nomes com acento não batem | Use `[7]` para ver os nomes exatos no Drive; ajuste os arrays `$Cidades`/`$Atividades` |
 | Script não executa (política) | Use `-ExecutionPolicy Bypass` ou `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
+
+## 🤖 Prompt de Contexto para Manutenção (IA)
+
+```text
+Você está trabalhando no projeto "Sync ATER" localizado em "C:\Users\randomacesso\sync-onedrive-gdrive-ater\start-sync.ps1" (PowerShell 7 + Rclone).
+
+Contexto técnico obrigatório:
+- Origem local (OneDrive): "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>\<Produtor>"
+- Destino nuvem (Google Drive): "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor>" (hierarquia invertida entre Cidade e Atividade).
+- Autenticação: Remote OAuth chamado "gdrive_saconsult" autenticado na conta "fernandoavena.saconsult@gmail.com". A pasta destino fica em "Compartilhados comigo" (NÃO é Team Drive/Shared Drive), exigindo a flag `--drive-shared-with-me`.
+- Regra de ouro: Usar exclusivamente `rclone copy --update` (NUNCA `rclone sync`), pois arquivos adicionados por outros técnicos no Google Drive jamais podem ser apagados.
+- O script deve manter o menu interativo (opções 0 a 12), suporte ao parâmetro `-Auto` para o Agendador de Tarefas do Windows (`-MultipleInstances IgnoreNew`), retry para rede instável (`--retries=3`) e limpeza automática de logs com mais de 7 dias.
+```
 
 ## 📝 Licença
 

@@ -369,7 +369,9 @@ do {
         }
         "9" {
             Write-Host "`nAbrindo configurador do rclone..." -ForegroundColor Cyan
-            Write-Host "Passos: n | name: $NomeRemoto | drive | scope: 1 | y (navegador) | conta da consultoria | n | y | q" -ForegroundColor Gray
+            Write-Host "  n | name: $NomeRemoto | drive | client_id: (Enter) | client_secret: (Enter)" -ForegroundColor Gray
+            Write-Host "  scope: 1 | service_account: (Enter) | Edit advanced: n | shared client_id: y" -ForegroundColor Gray
+            Write-Host "  browser: y (logar com fernandoavena.saconsult@gmail.com) | Shared Drive: n | Keep: y | q" -ForegroundColor Gray
             rclone config
             Read-Host "`nPressione Enter para voltar ao menu"
         }
