@@ -30,16 +30,16 @@ function Test-AndInstallRclone {
 
     Write-Host "[AVISO] rclone não encontrado no sistema." -ForegroundColor Yellow
 
-    # Verifica gerenciadores de pacote disponíveis (preferência: winget > scoop)
-    $TemWinget = Get-Command winget -ErrorAction SilentlyContinue
+    # Verifica gerenciadores de pacote disponíveis (preferência: scoop > winget)
     $TemScoop  = Get-Command scoop -ErrorAction SilentlyContinue
+    $TemWinget = Get-Command winget -ErrorAction SilentlyContinue
 
-    $Gerenciador = if ($TemWinget) { "winget" } elseif ($TemScoop) { "scoop" } else { $null }
+    $Gerenciador = if ($TemScoop) { "scoop" } elseif ($TemWinget) { "winget" } else { $null }
 
     if (-not $Gerenciador) {
-        Write-Host "[ERRO] Nem winget nem scoop encontrados. Instale um deles primeiro." -ForegroundColor Red
-        Write-Host "  winget: já vem no Windows 10/11 (App Installer)" -ForegroundColor Gray
+        Write-Host "[ERRO] Nem scoop nem winget encontrados. Instale um deles primeiro." -ForegroundColor Red
         Write-Host "  scoop:  iwr -useb get.scoop.sh | iex" -ForegroundColor Gray
+        Write-Host "  winget: já vem no Windows 10/11 (App Installer)" -ForegroundColor Gray
         return $false
     }
 
@@ -55,10 +55,10 @@ function Test-AndInstallRclone {
     Write-Host "Instalando rclone via $Gerenciador..." -ForegroundColor Cyan
 
     try {
-        if ($Gerenciador -eq "winget") {
-            winget install --id Rclone.Rclone --source winget --accept-source-agreements --accept-package-agreements
-        } else {
+        if ($Gerenciador -eq "scoop") {
             scoop install rclone
+        } else {
+            winget install --id Rclone.Rclone --source winget --accept-source-agreements --accept-package-agreements
         }
 
         # Recarrega o PATH para pegar o rclone recém-instalado (inclui links do winget)
