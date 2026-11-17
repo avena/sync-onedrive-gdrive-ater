@@ -4,10 +4,11 @@ Sincronizador unidirecional para copiar pastas de produtores rurais do **OneDriv
 
 ## 📋 Visão Geral
 
-- **Origem**: `C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>`
-- **Destino**: `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>` *(hierarquia invertida)*
+- **Origem**: `C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>\<Pasta do produtor>`
+- **Destino**: `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>` *(hierarquia invertida + nome padronizado)*
 - **Modo**: `rclone copy --update` — **nunca apaga** arquivos no destino (protege alterações da equipe)
 - **Autenticação**: OAuth via `rclone config` (remote `gdrive_saconsult`)
+- **Exceções**: pastas listadas em `ignorados.json` são puladas em todas as rotinas
 
 ## 🚀 Como Executar
 
@@ -110,10 +111,45 @@ Execute a opção **[9]** no menu do script (ou rode `rclone config` no terminal
 ```
 C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 ├── start-sync.ps1              # Script principal (menu + modo -Auto)
+├── ignorados.json              # Pastas que nunca devem ser sincronizadas (criado ao usar [I])
+├── self-check.ps1              # Verificação rápida das regras de nome e ignorados
 ├── logs\                       # Logs de cada execução (sync_YYYY-MM-DD_HH-mm-ss.log)
 ├── Espelhamento-de-Pastas-no-Drive.md  # Documentação original
 └── README.md                   # Este arquivo
 ```
+
+## 🏷️ Padronização do nome no Google Drive
+
+As pastas no OneDrive costumam vir com prefixo de data ou número (`2026-11-RICARDO ISHIDA`, `03 - Rafael Souza`). No destino o prefixo é removido por regex e o sufixo ` - RESUMO` é acrescentado:
+
+```powershell
+$NomeDrive = $NomeLocal -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''
+# 2026-11-RICARDO ISHIDA  ->  RICARDO ISHIDA - RESUMO
+# 03 - Rafael Souza       ->  Rafael Souza - RESUMO
+```
+
+Isso vale para **todas** as rotinas: `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`. Cada pasta de produtor é uma tarefa `rclone copy` independente (`.../FERNANDO/<Atividade>/<Cidade>/<Produtor> - RESUMO`), então o seletor `[4]` mostra o mapeamento ao lado do nome local:
+
+```
+  [4] Jacupiranga  >  ATIVIDADE INDIVIDUAL 1
+   [ ] 2026-11-RICARDO ISHIDA -> RICARDO ISHIDA - RESUMO  (14 arq.)
+```
+
+> Pastas sem prefixo viram `<nome> - RESUMO` do mesmo jeito.
+
+## 🚫 Nunca sincronizar (`ignorados.json`)
+
+No seletor `[4]`, `I` grava a pasta atual em `ignorados.json` e `H` alterna a exibição das entradas ignoradas (aparecem no fim, em cinza, como `[IGNORADO]`). `I` sobre uma entrada `[IGNORADO]` remove o registro e a pasta volta a sincronizar.
+
+O arquivo guarda **só o caminho relativo completo** até a pasta do produtor:
+
+```json
+[
+  "Jacupiranga\\ATIVIDADE INDIVIDUAL 1\\2026-11-RICARDO ISHIDA"
+]
+```
+
+**Regra crítica**: o nome do produtor isolado nunca é usado. Ignorar `RICARDO ISHIDA` na `ATIVIDADE INDIVIDUAL 1` não afeta a `ATIVIDADE INDIVIDUAL 2` — cada atividade tem sua própria entrada. O arquivo é consultado por `[1]`, `[2]`, `[3]`, `[4]` e `-Auto`, que pulam as entradas listadas e informam quantas foram ignoradas no resumo.
 
 ## ⚙️ Menu Interativo
 
@@ -144,17 +180,19 @@ Interface TUI nativa (sem módulos externos), usando `[Console]::ReadKey($true)`
 | `↑` / `↓` | Navegar na lista |
 | `Espaço` | Marcar/desmarcar o produtor (`[X]` / `[ ]`) |
 | `A` | Marcar/desmarcar **todos** |
+| `I` | Ignorar esta atividade (grava em `ignorados.json`) / desfazer se já estiver `[IGNORADO]` |
+| `H` | Mostrar/ocultar as entradas ignoradas (exibidas no fim, em cinza) |
 | `D` | Dry-Run **só nos marcados** |
 | `S` | Sincronizar **só os marcados** |
 | `Q` / `Esc` | Voltar ao menu |
 
-Cada produtor mostra a contagem de arquivos. `try/finally` garante que o cursor volte ao normal ao sair.
+Cada produtor mostra a contagem de arquivos e como o nome ficará no Drive (`local -> NOME - RESUMO`). `try/finally` garante que o cursor volte ao normal ao sair.
 
 ### Feedback durante a execução
 
 O `rclone` roda sempre com `--log-file`, porque o `-v` escreve em **stderr** — no Windows PowerShell 5.1 isso aparece como erro vermelho (`NativeCommandError`) se capturado pelo pipeline. Em vez disso:
 
-- Cada pasta imprime `[3/15] Registro | ATIVIDADE INDIVIDUAL 1` antes de rodar.
+- Cada pasta de produtor imprime `[3/15] Registro | ATIVIDADE INDIVIDUAL 1 | 2026-11-RICARDO ISHIDA` antes de rodar.
 - Depois de cada pasta: `-> 12 novo(s), 3 atualizado(s)` (ou `-> N arquivo(s) pendente(s)` no dry-run), lido das linhas novas do log.
 - No fim do dry-run: **`--- RESUMO DO DRY-RUN ---`** com o total ou `[OK] Tudo sincronizado! Nenhuma alteração pendente encontrada.`
 - Teclas pendentes são drenadas (`Clear-KeyBuffer`) antes do `Read-Host`, então o Enter responde na hora.
@@ -209,12 +247,15 @@ rclone version
 # 2. Testa autenticação e lista pastas compartilhadas
 rclone lsd gdrive_saconsult: --drive-shared-with-me
 
-# 3. Dry-run de uma pasta específica
-rclone copy "C:\...\Fernando\Registro\ATIVIDADE INDIVIDUAL 1" "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/ATIVIDADE INDIVIDUAL 1/Registro" --update --drive-shared-with-me --dry-run -v
+# 3. Dry-run de uma pasta específica (nome já padronizado no destino)
+rclone copy "C:\...\Fernando\Registro\ATIVIDADE INDIVIDUAL 1\2026-11-RICARDO ISHIDA" "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/ATIVIDADE INDIVIDUAL 1/Registro/RICARDO ISHIDA - RESUMO" --update --drive-shared-with-me --dry-run -v
 
 # 4. Roda script em modo simulação (opção 1 do menu)
 pwsh -ExecutionPolicy Bypass -File ".\start-sync.ps1"
 # Escolha [1] no menu
+
+# 5. Verifica as regras de renomeação e de ignorados (usar antes de commitar)
+pwsh -NoProfile -File ".\self-check.ps1"
 ```
 
 ## 🐛 Troubleshooting
@@ -234,7 +275,9 @@ Você está trabalhando no projeto "Sync ATER" localizado em "C:\Users\randomace
 
 Contexto técnico obrigatório:
 - Origem local (OneDrive): "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>\<Produtor>"
-- Destino nuvem (Google Drive): "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor>" (hierarquia invertida entre Cidade e Atividade).
+- Destino nuvem (Google Drive): "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>" (hierarquia invertida entre Cidade e Atividade).
+- Padronização do nome: remover o prefixo com `-replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''` e acrescentar " - RESUMO". Aplicar em [1], [2], [3], [4] e -Auto, uma tarefa de produtor por vez.
+- Nunca sincronizar: "ignorados.json" guarda exclusivamente o caminho relativo "Cidade\Atividade\NomePastaProdutor" (nunca o nome isolado do produtor, pois a mesma pessoa pode existir em outra atividade) e todas as rotinas pulam essas entradas.
 - Autenticação: Remote OAuth chamado "gdrive_saconsult" autenticado na conta "fernandoavena.saconsult@gmail.com". A pasta destino fica em "Compartilhados comigo" (NÃO é Team Drive/Shared Drive), exigindo a flag `--drive-shared-with-me`.
 - Regra de ouro: Usar exclusivamente `rclone copy --update` (NUNCA `rclone sync`), pois arquivos adicionados por outros técnicos no Google Drive jamais podem ser apagados.
 - O script deve manter o menu interativo (opções 0 a 12), suporte ao parâmetro `-Auto` para o Agendador de Tarefas do Windows (`-MultipleInstances IgnoreNew`), retry para rede instável (`--retries=3`) e limpeza automática de logs com mais de 7 dias.

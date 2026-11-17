@@ -124,6 +124,53 @@ function Test-RemoteConfigurado {
     return ((rclone listremotes --quiet) -contains "${NomeRemoto}:")
 }
 
+# ================= NOMES NO DESTINO E IGNORADOS =================
+$IgnoradosFile = Join-Path $PSScriptRoot 'ignorados.json'
+
+# "2026-11-RICARDO ISHIDA" e "03 - Rafael Souza" -> "RICARDO ISHIDA - RESUMO"
+function Get-NomeResumo {
+    param([string]$Nome)
+    return ("{0} - RESUMO" -f ($Nome -replace '^(\d{4}-\d{2}-|\d+\s*-\s*)', ''))
+}
+
+# Lista de caminhos relativos ignorados: "Cidade\Atividade\NomePastaProdutor"
+function Get-Ignorados {
+    if (-not (Test-Path $IgnoradosFile)) { return @() }
+    try {
+        return @(@(Get-Content $IgnoradosFile -Raw -Encoding UTF8 | ConvertFrom-Json) | Where-Object { $_ })
+    } catch { return @() }
+}
+
+function Save-Ignorados {
+    param([string[]]$Lista)
+    ConvertTo-Json -InputObject @($Lista | Sort-Object -Unique) -Depth 2 |
+        Set-Content -Path $IgnoradosFile -Encoding UTF8
+}
+
+# Uma entrada por pasta de produtor, já com o nome padronizado usado no Google Drive
+function Get-Produtores {
+    param([string[]]$ListaCidades = $Cidades)
+    foreach ($Cidade in $ListaCidades) {
+        foreach ($Atividade in $Atividades) {
+            $CaminhoAtiv = Join-Path $OrigemBase "$Cidade\$Atividade"
+            if (-not (Test-Path $CaminhoAtiv)) { continue }
+            foreach ($Prod in (Get-ChildItem -Path $CaminhoAtiv -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                $NomeDrive = Get-NomeResumo $Prod.Name
+                [PSCustomObject]@{
+                    Cidade    = $Cidade
+                    Atividade = $Atividade
+                    Produtor  = $Prod.Name
+                    NomeDrive = $NomeDrive
+                    Relativo  = "$Cidade\$Atividade\$($Prod.Name)"
+                    Local     = $Prod.FullName
+                    Nuvem     = "$RemotoDrive/$Atividade/$Cidade/$NomeDrive"
+                }
+            }
+            # ponytail: arquivos soltos na raiz da atividade não são copiados; criar tarefa extra se existirem
+        }
+    }
+}
+
 # ================= AÇÕES AUXILIARES =================
 function Clear-KeyBuffer {
     # Evita que teclas pendentes "vazem" para o próximo Read-Host
@@ -165,27 +212,24 @@ function Invoke-RcloneCopy {
     }
 }
 
-# Seletor TUI: Cidade > Atividade > Produtor (setas + Espaço + A/D/S/Q)
+# Seletor TUI: Cidade > Atividade > Produtor (setas + Espaço + A/D/S/I/H/Q)
 function Show-ProdutoresSelector {
+    $Ignorados = Get-Ignorados
     $Itens = New-Object System.Collections.ArrayList
 
-    foreach ($Cidade in $Cidades) {
-        foreach ($Atividade in $Atividades) {
-            $CaminhoAtiv = Join-Path $OrigemBase "$Cidade\$Atividade"
-            if (-not (Test-Path $CaminhoAtiv)) { continue }
-            foreach ($Prod in (Get-ChildItem -Path $CaminhoAtiv -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
-                $Qtd = @(Get-ChildItem -Path $Prod.FullName -File -Recurse -ErrorAction SilentlyContinue).Count
-                [void]$Itens.Add([PSCustomObject]@{
-                    Selecionado = $false
-                    Cidade      = $Cidade
-                    Atividade   = $Atividade
-                    Produtor    = $Prod.Name
-                    QtdArquivos = $Qtd
-                    Local       = $Prod.FullName
-                    Nuvem       = "$RemotoDrive/$Atividade/$Cidade/$($Prod.Name)"
-                })
-            }
-        }
+    foreach ($P in (Get-Produtores)) {
+        [void]$Itens.Add([PSCustomObject]@{
+            Selecionado = $false
+            Ignorado    = ($Ignorados -contains $P.Relativo)
+            Cidade      = $P.Cidade
+            Atividade   = $P.Atividade
+            Produtor    = $P.Produtor
+            NomeDrive   = $P.NomeDrive
+            Relativo    = $P.Relativo
+            QtdArquivos = @(Get-ChildItem -Path $P.Local -File -Recurse -ErrorAction SilentlyContinue).Count
+            Local       = $P.Local
+            Nuvem       = $P.Nuvem
+        })
     }
 
     if ($Itens.Count -eq 0) {
@@ -196,28 +240,37 @@ function Show-ProdutoresSelector {
     $Atual  = 0
     $Offset = 0
     $Altura = 20
-    try { $Altura = [Math]::Max(8, $Host.UI.RawUI.WindowSize.Height - 14) } catch { }
+    $MostrarIgnorados = $false
+    try { $Altura = [Math]::Max(8, $Host.UI.RawUI.WindowSize.Height - 15) } catch { }
     try { [Console]::CursorVisible = $false } catch { }
 
     try {
         while ($true) {
+            # Ignorados vão para o fim e só aparecem com [H]
+            $Visiveis = @($Itens | Where-Object { -not $_.Ignorado })
+            if ($MostrarIgnorados) { $Visiveis += @($Itens | Where-Object { $_.Ignorado }) }
+            if ($Atual -gt ($Visiveis.Count - 1)) { $Atual = $Visiveis.Count - 1 }
+            if ($Atual -lt 0) { $Atual = 0 }
+
             Clear-Host
-            $Marcados = @($Itens | Where-Object { $_.Selecionado }).Count
+            $Marcados = @($Visiveis | Where-Object { $_.Selecionado }).Count
+            $QtdIgnorados = @($Itens | Where-Object { $_.Ignorado }).Count
 
             Write-Host ("=" * 74) -ForegroundColor Cyan
-            Write-Host " SELETOR DE PRODUTORES - OneDrive -> Google Drive    Marcados: $Marcados / $($Itens.Count)" -ForegroundColor White
+            Write-Host " SELETOR DE PRODUTORES - OneDrive -> Google Drive    Marcados: $Marcados / $($Visiveis.Count)" -ForegroundColor White
             Write-Host ("=" * 74) -ForegroundColor Cyan
-            Write-Host " [Setas] Navegar | [Espaco] Marcar | [A] Todos/Nenhum | [D] Dry-Run | [S] Sincronizar | [Q/Esc] Voltar" -ForegroundColor Yellow
+            Write-Host " [Setas] Navegar | [Espaco] Marcar | [A] Todos/Nenhum | [D] Dry-Run | [S] Sincronizar" -ForegroundColor Yellow
+            Write-Host " [I] Ignorar esta atividade | [H] Mostrar/Ocultar ignorados ($QtdIgnorados) | [Q/Esc] Voltar" -ForegroundColor Yellow
             Write-Host ("-" * 74) -ForegroundColor Cyan
 
             if ($Atual -lt $Offset) { $Offset = $Atual }
             if ($Atual -ge ($Offset + $Altura)) { $Offset = $Atual - $Altura + 1 }
-            $Fim = [Math]::Min($Itens.Count - 1, $Offset + $Altura - 1)
+            $Fim = [Math]::Min($Visiveis.Count - 1, $Offset + $Altura - 1)
             $UltCidade = ""
             $UltAtiv   = ""
 
             for ($i = $Offset; $i -le $Fim; $i++) {
-                $Item = $Itens[$i]
+                $Item = $Visiveis[$i]
                 if ($Item.Cidade -ne $UltCidade -or $Item.Atividade -ne $UltAtiv) {
                     Write-Host "`n  $($Item.Cidade)  >  $($Item.Atividade)" -ForegroundColor Cyan
                     $UltCidade = $Item.Cidade
@@ -225,9 +278,11 @@ function Show-ProdutoresSelector {
                 }
                 $Check = if ($Item.Selecionado) { "[X]" } else { "[ ]" }
                 $Seta  = if ($i -eq $Atual) { " > " } else { "   " }
-                $Linha = "$Seta$Check $($Item.Produtor)  ($($Item.QtdArquivos) arq.)"
+                $Marca = if ($Item.Ignorado) { "[IGNORADO] " } else { "" }
+                $Linha = "$Seta$Check $Marca$($Item.Produtor) -> $($Item.NomeDrive)  ($($Item.QtdArquivos) arq.)"
 
                 if ($i -eq $Atual) { Write-Host $Linha -ForegroundColor Black -BackgroundColor Gray }
+                elseif ($Item.Ignorado) { Write-Host $Linha -ForegroundColor DarkGray }
                 elseif ($Item.Selecionado) { Write-Host $Linha -ForegroundColor Green }
                 else { Write-Host $Linha -ForegroundColor White }
             }
@@ -237,14 +292,31 @@ function Show-ProdutoresSelector {
 
             switch ($Tecla.Key) {
                 "UpArrow"   { if ($Atual -gt 0) { $Atual-- } }
-                "DownArrow" { if ($Atual -lt ($Itens.Count - 1)) { $Atual++ } }
-                "Spacebar"  { $Itens[$Atual].Selecionado = -not $Itens[$Atual].Selecionado }
+                "DownArrow" { if ($Atual -lt ($Visiveis.Count - 1)) { $Atual++ } }
+                "Spacebar"  { if ($Visiveis.Count -gt 0) { $Visiveis[$Atual].Selecionado = -not $Visiveis[$Atual].Selecionado } }
                 "A" {
-                    $NovoEstado = ($Marcados -lt $Itens.Count)
-                    foreach ($It in $Itens) { $It.Selecionado = $NovoEstado }
+                    $NovoEstado = ($Marcados -lt $Visiveis.Count)
+                    foreach ($It in $Visiveis) { if (-not $It.Ignorado) { $It.Selecionado = $NovoEstado } }
+                }
+                "H" { $MostrarIgnorados = -not $MostrarIgnorados; $Atual = 0; $Offset = 0 }
+                "I" {
+                    if ($Visiveis.Count -eq 0) { continue }
+                    $Item = $Visiveis[$Atual]
+                    $Lista = Get-Ignorados
+                    if ($Item.Ignorado) {
+                        Save-Ignorados @($Lista | Where-Object { $_ -ne $Item.Relativo })
+                        $Item.Ignorado = $false
+                        Write-Host "`n[OK] '$($Item.Relativo)' voltou a ser sincronizado." -ForegroundColor Green
+                    } else {
+                        Save-Ignorados (@($Lista) + $Item.Relativo)
+                        $Item.Ignorado = $true
+                        $Item.Selecionado = $false
+                        Write-Host "`n[OK] '$($Item.Relativo)' ignorado (nao sera sincronizado)." -ForegroundColor DarkGray
+                    }
+                    Start-Sleep -Milliseconds 900
                 }
                 { $_ -in "D", "S" } {
-                    $Alvos = @($Itens | Where-Object { $_.Selecionado })
+                    $Alvos = @($Visiveis | Where-Object { $_.Selecionado -and -not $_.Ignorado })
                     if ($Alvos.Count -eq 0) {
                         Write-Host "`n[!] Marque pelo menos um produtor com a barra de Espaco." -ForegroundColor Red
                         Start-Sleep -Milliseconds 1200
@@ -390,27 +462,19 @@ function Invoke-AterSync {
     Write-Host " Horário: $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')" -ForegroundColor Gray
     Write-Host "============================================================`n" -ForegroundColor Cyan
 
-    # Monta a lista uma vez: permite contador [i/N] e evita varrer as pastas duas vezes
+    # Uma tarefa por pasta de produtor (nome padronizado no destino), já sem as ignoradas
     $ListaCidades = if ($ApenasCidade) { @($ApenasCidade) } else { $Cidades }
-    $Tarefas = @()
-    foreach ($Cidade in $ListaCidades) {
-        foreach ($Atividade in $Atividades) {
-            # Caminho no OneDrive: ...\Fernando\<Cidade>\<Atividade>
-            $CaminhoLocal = Join-Path -Path $OrigemBase -ChildPath "$Cidade\$Atividade"
-            if (Test-Path $CaminhoLocal) {
-                $Tarefas += [PSCustomObject]@{
-                    Cidade    = $Cidade
-                    Atividade = $Atividade
-                    Local     = $CaminhoLocal
-                    # Caminho invertido no Google Drive: ...\FERNANDO/<Atividade>/<Cidade>
-                    Nuvem     = "$RemotoDrive/$Atividade/$Cidade"
-                }
-            }
-        }
+    $Ignorados = Get-Ignorados
+    $Todos = @(Get-Produtores -ListaCidades $ListaCidades)
+    $Tarefas = @($Todos | Where-Object { $Ignorados -notcontains $_.Relativo })
+    $QtdIgnorados = $Todos.Count - $Tarefas.Count
+
+    if ($QtdIgnorados -gt 0) {
+        Write-Host "[INFO] $QtdIgnorados pasta(s) ignorada(s) via ignorados.json.`n" -ForegroundColor DarkYellow
     }
 
     if ($Tarefas.Count -eq 0) {
-        Write-Host "[AVISO] Nenhuma pasta de Cidade/Atividade encontrada no OneDrive local." -ForegroundColor Yellow
+        Write-Host "[AVISO] Nenhuma pasta de produtor encontrada no OneDrive local." -ForegroundColor Yellow
         return $true
     }
 
@@ -421,7 +485,7 @@ function Invoke-AterSync {
 
     foreach ($T in $Tarefas) {
         $Indice++
-        Write-Host "[$Indice/$($Tarefas.Count)] $($T.Cidade) | $($T.Atividade)" -ForegroundColor Green
+        Write-Host "[$Indice/$($Tarefas.Count)] $($T.Cidade) | $($T.Atividade) | $($T.Produtor)" -ForegroundColor Green
         Write-Host "   Local : $($T.Local)" -ForegroundColor DarkGray
         Write-Host "   Nuvem : $($T.Nuvem)" -ForegroundColor DarkGray
 
@@ -454,7 +518,7 @@ function Invoke-AterSync {
         }
     }
 
-    Write-Host "Processo finalizado ($($Tarefas.Count) pastas verificadas, $Falhas com falha)." -ForegroundColor Cyan
+    Write-Host "Processo finalizado ($($Tarefas.Count) pastas verificadas, $QtdIgnorados ignoradas, $Falhas com falha)." -ForegroundColor Cyan
     Write-Host "Log salvo em: $LogFile`n" -ForegroundColor Gray
 
     return ($Falhas -eq 0)

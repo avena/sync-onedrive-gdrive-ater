@@ -6,3 +6,7 @@ rclone.conf
 
 # Configurações locais da IDE
 .codebuddy/
+
+# Runtime da triagem de campo (log e dados de visitas do usuário)
+triagem-log.txt
+visitas.json
