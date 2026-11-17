@@ -754,7 +754,9 @@ foreach ($Dia in $RelatorioDias) {
             Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER para aceitar" -ForegroundColor Yellow
         }
 
-        $Escolha = (Read-Host " TAG (A/B/C), Enter aceita sugestao, P pula, I individual, Q sair").Trim().ToUpper()
+        $PromptTag = if ($Sugestao) { " TAG (A/B/C), Enter aceita sugestao [$Sugestao], P pula, I individual, Q sair" }
+                     else { " TAG (A/B/C), P/Enter pula, I individual, Q sair (sem sugestao para este lote)" }
+        $Escolha = (Read-Host $PromptTag).Trim().ToUpper()
         if ($Escolha -eq '' -and $Sugestao) { $Escolha = $Sugestao }
 
         if ($Escolha -eq 'Q') { Write-Host "   -> Triagem encerrada." -ForegroundColor Yellow; Write-TriagemLog "ENCERRADO no lote #$NumLote de $($Dia.data)"; $Sair = $true; break }

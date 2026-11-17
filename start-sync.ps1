@@ -654,6 +654,7 @@ do {
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 
+    Clear-KeyBuffer   # teclas digitadas durante o sync nao vazam para a escolha do menu
     $Opcao = Read-Host "Escolha uma opção"
 
     switch ($Opcao) {
