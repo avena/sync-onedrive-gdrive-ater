@@ -1,3 +1,5 @@
+> 📋 **[DIA-A-DIA.md](DIA-A-DIA.md)** — Guia rápido e prático da rotina diária (campo → nuvem), pronto para imprimir em uma folha.
+
 # Sync ATER - OneDrive → Google Drive (SA Consultoria)
 
 Sincronizador unidirecional para copiar pastas de produtores rurais do **OneDrive local** para o **Google Drive compartilhado** da conta `fernandoavena.saconsult@gmail.com`.
