@@ -33,7 +33,11 @@ $Cidades = @(
 $Atividades = @(
     "ATIVIDADE INDIVIDUAL 1",
     "ATIVIDADE INDIVIDUAL 2",
-    "ATIVIDADE INDIVIDUAL 3"
+    "ATIVIDADE INDIVIDUAL 3",
+    "ATIVIDADE INDIVIDUAL 4",
+    "ATIVIDADE INDIVIDUAL 5",
+    "ATIVIDADE INDIVIDUAL 6",
+    "PROJETO PRODUTIVO"
 )
 
 # copy + --update: copia novos e atualiza mais recentes; NUNCA apaga nada no destino.
@@ -121,19 +125,178 @@ function Test-RemoteConfigurado {
 }
 
 # ================= AÇÕES AUXILIARES =================
-function Show-PastasLocais {
-    Write-Host "`nPastas encontradas em $OrigemBase" -ForegroundColor Cyan
-    $Total = 0
+function Clear-KeyBuffer {
+    # Evita que teclas pendentes "vazem" para o próximo Read-Host
+    try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { }
+}
+
+# Executa o rclone para um par Local->Nuvem e devolve código de saída + contadores.
+# Sempre usa --log-file: o -v do rclone escreve em stderr, que no PS 5.1 aparece
+# como erro vermelho (NativeCommandError) se for capturado pelo pipeline.
+function Invoke-RcloneCopy {
+    param(
+        [string]$Local,
+        [string]$Nuvem,
+        [bool]$Simulacao,
+        [string]$LogFile
+    )
+
+    $Args = @("copy", $Local, $Nuvem) + $RcloneFlags + @("--log-file=$LogFile")
+    if ($Simulacao) { $Args += "--dry-run" }
+
+    # Marca onde o log estava para ler depois só as linhas desta execução
+    $LinhasAntes = 0
+    if (Test-Path $LogFile) { $LinhasAntes = @(Get-Content $LogFile -Encoding UTF8).Count }
+
+    & rclone @Args
+    $Codigo = $LASTEXITCODE
+
+    $Novas = @()
+    if (Test-Path $LogFile) {
+        $Novas = @(Get-Content $LogFile -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -Skip $LinhasAntes)
+    }
+
+    [PSCustomObject]@{
+        Codigo      = $Codigo
+        Pendentes   = @($Novas | Select-String 'Skipped (copy|update)').Count
+        Copiados    = @($Novas | Select-String 'Copied \(new\)').Count
+        Atualizados = @($Novas | Select-String 'Copied \(replaced|Updated').Count
+        Erros       = @($Novas | Select-String 'ERROR').Count
+    }
+}
+
+# Seletor TUI: Cidade > Atividade > Produtor (setas + Espaço + A/D/S/Q)
+function Show-ProdutoresSelector {
+    $Itens = New-Object System.Collections.ArrayList
+
     foreach ($Cidade in $Cidades) {
         foreach ($Atividade in $Atividades) {
-            if (Test-Path (Join-Path $OrigemBase "$Cidade\$Atividade")) {
-                $Total++
-                Write-Host "  [OK] $Cidade | $Atividade" -ForegroundColor Green
+            $CaminhoAtiv = Join-Path $OrigemBase "$Cidade\$Atividade"
+            if (-not (Test-Path $CaminhoAtiv)) { continue }
+            foreach ($Prod in (Get-ChildItem -Path $CaminhoAtiv -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                $Qtd = @(Get-ChildItem -Path $Prod.FullName -File -Recurse -ErrorAction SilentlyContinue).Count
+                [void]$Itens.Add([PSCustomObject]@{
+                    Selecionado = $false
+                    Cidade      = $Cidade
+                    Atividade   = $Atividade
+                    Produtor    = $Prod.Name
+                    QtdArquivos = $Qtd
+                    Local       = $Prod.FullName
+                    Nuvem       = "$RemotoDrive/$Atividade/$Cidade/$($Prod.Name)"
+                })
             }
         }
     }
-    if ($Total -eq 0) { Write-Host "  Nenhuma pasta Cidade\Atividade encontrada." -ForegroundColor Yellow }
-    else { Write-Host "`n  $Total pasta(s) prontas para sincronizar." -ForegroundColor Cyan }
+
+    if ($Itens.Count -eq 0) {
+        Write-Host "`n[AVISO] Nenhuma pasta de produtor encontrada em $OrigemBase" -ForegroundColor Yellow
+        return
+    }
+
+    $Atual  = 0
+    $Offset = 0
+    $Altura = 20
+    try { $Altura = [Math]::Max(8, $Host.UI.RawUI.WindowSize.Height - 14) } catch { }
+    try { [Console]::CursorVisible = $false } catch { }
+
+    try {
+        while ($true) {
+            Clear-Host
+            $Marcados = @($Itens | Where-Object { $_.Selecionado }).Count
+
+            Write-Host ("=" * 74) -ForegroundColor Cyan
+            Write-Host " SELETOR DE PRODUTORES - OneDrive -> Google Drive    Marcados: $Marcados / $($Itens.Count)" -ForegroundColor White
+            Write-Host ("=" * 74) -ForegroundColor Cyan
+            Write-Host " [Setas] Navegar | [Espaco] Marcar | [A] Todos/Nenhum | [D] Dry-Run | [S] Sincronizar | [Q/Esc] Voltar" -ForegroundColor Yellow
+            Write-Host ("-" * 74) -ForegroundColor Cyan
+
+            if ($Atual -lt $Offset) { $Offset = $Atual }
+            if ($Atual -ge ($Offset + $Altura)) { $Offset = $Atual - $Altura + 1 }
+            $Fim = [Math]::Min($Itens.Count - 1, $Offset + $Altura - 1)
+            $UltCidade = ""
+            $UltAtiv   = ""
+
+            for ($i = $Offset; $i -le $Fim; $i++) {
+                $Item = $Itens[$i]
+                if ($Item.Cidade -ne $UltCidade -or $Item.Atividade -ne $UltAtiv) {
+                    Write-Host "`n  $($Item.Cidade)  >  $($Item.Atividade)" -ForegroundColor Cyan
+                    $UltCidade = $Item.Cidade
+                    $UltAtiv   = $Item.Atividade
+                }
+                $Check = if ($Item.Selecionado) { "[X]" } else { "[ ]" }
+                $Seta  = if ($i -eq $Atual) { " > " } else { "   " }
+                $Linha = "$Seta$Check $($Item.Produtor)  ($($Item.QtdArquivos) arq.)"
+
+                if ($i -eq $Atual) { Write-Host $Linha -ForegroundColor Black -BackgroundColor Gray }
+                elseif ($Item.Selecionado) { Write-Host $Linha -ForegroundColor Green }
+                else { Write-Host $Linha -ForegroundColor White }
+            }
+
+            Write-Host "`n$("-" * 74)" -ForegroundColor Cyan
+            $Tecla = [Console]::ReadKey($true)
+
+            switch ($Tecla.Key) {
+                "UpArrow"   { if ($Atual -gt 0) { $Atual-- } }
+                "DownArrow" { if ($Atual -lt ($Itens.Count - 1)) { $Atual++ } }
+                "Spacebar"  { $Itens[$Atual].Selecionado = -not $Itens[$Atual].Selecionado }
+                "A" {
+                    $NovoEstado = ($Marcados -lt $Itens.Count)
+                    foreach ($It in $Itens) { $It.Selecionado = $NovoEstado }
+                }
+                { $_ -in "D", "S" } {
+                    $Alvos = @($Itens | Where-Object { $_.Selecionado })
+                    if ($Alvos.Count -eq 0) {
+                        Write-Host "`n[!] Marque pelo menos um produtor com a barra de Espaco." -ForegroundColor Red
+                        Start-Sleep -Milliseconds 1200
+                        continue
+                    }
+
+                    $Simular = ($Tecla.Key -eq "D")
+                    $TituloAcao = if ($Simular) { "DRY-RUN (SIMULACAO)" } else { "SINCRONIZACAO REAL (COPY)" }
+                    if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+                    $LogSel = Join-Path $LogDir ("sync_seletivo_{0}.log" -f (Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'))
+
+                    try { [Console]::CursorVisible = $true } catch { }
+                    Clear-Host
+                    Write-Host "=== $TituloAcao - $($Alvos.Count) produtor(es) ===`n" -ForegroundColor Cyan
+
+                    $Pend = 0
+                    $FalhasSel = 0
+                    foreach ($Sel in $Alvos) {
+                        Write-Host "-> $($Sel.Cidade) | $($Sel.Atividade) | $($Sel.Produtor)" -ForegroundColor Green
+                        $R = Invoke-RcloneCopy -Local $Sel.Local -Nuvem $Sel.Nuvem -Simulacao $Simular -LogFile $LogSel
+                        $Pend += $R.Pendentes
+                        if ($R.Codigo -ne 0) { $FalhasSel++ }
+                        $Resumo = if ($Simular) {
+                            "$($R.Pendentes) arquivo(s) pendente(s)"
+                        } else {
+                            "$($R.Copiados) novo(s), $($R.Atualizados) atualizado(s)"
+                        }
+                        if ($R.Erros -gt 0) { $Resumo += " | $($R.Erros) erro(s)" }
+                        Write-Host "   -> $Resumo`n" -ForegroundColor DarkCyan
+                    }
+
+                    if ($Simular) {
+                        if ($Pend -eq 0 -and $FalhasSel -eq 0) {
+                            Write-Host "[OK] Nenhuma alteracao pendente nos produtores marcados." -ForegroundColor Green
+                        } else {
+                            Write-Host "$Pend arquivo(s) seriam copiados/atualizados." -ForegroundColor Yellow
+                        }
+                    }
+                    Write-Host "Concluido ($($Alvos.Count) produtor(es), $FalhasSel com falha). Log: $LogSel" -ForegroundColor Cyan
+
+                    Read-Host "Pressione Enter para voltar a selecao"
+                    Clear-KeyBuffer
+                    try { [Console]::CursorVisible = $false } catch { }
+                }
+                { $_ -in "Q", "Escape" } { return }
+            }
+        }
+    } finally {
+        try { [Console]::CursorVisible = $true } catch { }
+        Clear-KeyBuffer
+        Clear-Host
+    }
 }
 
 function Show-UltimoLog {
@@ -227,49 +390,74 @@ function Invoke-AterSync {
     Write-Host " Horário: $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')" -ForegroundColor Gray
     Write-Host "============================================================`n" -ForegroundColor Cyan
 
-    $ParesEncontrados = 0
-    $ParesComFalha    = 0
-
+    # Monta a lista uma vez: permite contador [i/N] e evita varrer as pastas duas vezes
     $ListaCidades = if ($ApenasCidade) { @($ApenasCidade) } else { $Cidades }
+    $Tarefas = @()
     foreach ($Cidade in $ListaCidades) {
         foreach ($Atividade in $Atividades) {
             # Caminho no OneDrive: ...\Fernando\<Cidade>\<Atividade>
             $CaminhoLocal = Join-Path -Path $OrigemBase -ChildPath "$Cidade\$Atividade"
-
             if (Test-Path $CaminhoLocal) {
-                $ParesEncontrados++
-                # Caminho invertido no Google Drive: ...\FERNANDO/<Atividade>/<Cidade>
-                $CaminhoNuvem = "$RemotoDrive/$Atividade/$Cidade"
-
-                Write-Host "-> [$Cidade] | [$Atividade]" -ForegroundColor Green
-                Write-Host "   Local : $CaminhoLocal" -ForegroundColor DarkGray
-                Write-Host "   Nuvem : $CaminhoNuvem" -ForegroundColor DarkGray
-
-                $ArgsRclone = @("copy", $CaminhoLocal, $CaminhoNuvem) + $RcloneFlags + @("--log-file=$LogFile")
-                if ($Simulacao) {
-                    $ArgsRclone += "--dry-run"
-                }
-
-                & rclone @ArgsRclone
-
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "   Status: Concluído com sucesso.`n" -ForegroundColor Cyan
-                } else {
-                    $ParesComFalha++
-                    Write-Host "   Status: Atenção - Rclone retornou código $LASTEXITCODE. Verifique o log.`n" -ForegroundColor Red
+                $Tarefas += [PSCustomObject]@{
+                    Cidade    = $Cidade
+                    Atividade = $Atividade
+                    Local     = $CaminhoLocal
+                    # Caminho invertido no Google Drive: ...\FERNANDO/<Atividade>/<Cidade>
+                    Nuvem     = "$RemotoDrive/$Atividade/$Cidade"
                 }
             }
         }
     }
 
-    if ($ParesEncontrados -eq 0) {
+    if ($Tarefas.Count -eq 0) {
         Write-Host "[AVISO] Nenhuma pasta de Cidade/Atividade encontrada no OneDrive local." -ForegroundColor Yellow
-    } else {
-        Write-Host "Processo finalizado ($ParesEncontrados pastas verificadas, $ParesComFalha com falha)." -ForegroundColor Cyan
-        Write-Host "Log salvo em: $LogFile`n" -ForegroundColor Gray
+        return $true
     }
 
-    return ($ParesComFalha -eq 0)
+    $Indice    = 0
+    $Falhas    = 0
+    $Pendentes = 0
+    $Erros     = 0
+
+    foreach ($T in $Tarefas) {
+        $Indice++
+        Write-Host "[$Indice/$($Tarefas.Count)] $($T.Cidade) | $($T.Atividade)" -ForegroundColor Green
+        Write-Host "   Local : $($T.Local)" -ForegroundColor DarkGray
+        Write-Host "   Nuvem : $($T.Nuvem)" -ForegroundColor DarkGray
+
+        $Resultado = Invoke-RcloneCopy -Local $T.Local -Nuvem $T.Nuvem -Simulacao $Simulacao -LogFile $LogFile
+        $Pendentes += $Resultado.Pendentes
+        $Erros     += $Resultado.Erros
+
+        $Resumo = if ($Simulacao) {
+            "$($Resultado.Pendentes) arquivo(s) pendente(s)"
+        } else {
+            "$($Resultado.Copiados) novo(s), $($Resultado.Atualizados) atualizado(s)"
+        }
+        if ($Resultado.Erros -gt 0) { $Resumo += " | $($Resultado.Erros) erro(s)" }
+        Write-Host "   -> $Resumo" -ForegroundColor DarkCyan
+
+        if ($Resultado.Codigo -eq 0) {
+            Write-Host "   Status: Concluído.`n" -ForegroundColor Cyan
+        } else {
+            $Falhas++
+            Write-Host "   Status: Atenção - rclone retornou $($Resultado.Codigo).`n" -ForegroundColor Red
+        }
+    }
+
+    if ($Simulacao) {
+        Write-Host "--- RESUMO DO DRY-RUN ---" -ForegroundColor Cyan
+        if ($Pendentes -eq 0 -and $Erros -eq 0) {
+            Write-Host "[OK] Tudo sincronizado! Nenhuma alteração pendente encontrada." -ForegroundColor Green
+        } else {
+            Write-Host "$Pendentes arquivo(s) seriam copiados/atualizados | $Erros erro(s) no log." -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "Processo finalizado ($($Tarefas.Count) pastas verificadas, $Falhas com falha)." -ForegroundColor Cyan
+    Write-Host "Log salvo em: $LogFile`n" -ForegroundColor Gray
+
+    return ($Falhas -eq 0)
 }
 
 # ================= EXECUÇÃO AUTOMÁTICA (AGENDADOR) =================
@@ -303,7 +491,7 @@ do {
     Write-Host " [1] Verificar alterações (Dry-Run / simulação segura)" -ForegroundColor Yellow
     Write-Host " [2] Sincronizar AGORA (todas as cidades)" -ForegroundColor Green
     Write-Host " [3] Sincronizar UMA cidade específica" -ForegroundColor Green
-    Write-Host " [4] Mostrar pastas locais encontradas" -ForegroundColor White
+    Write-Host " [4] Selecionar produtores (setas/Espaco/D/S)" -ForegroundColor White
     Write-Host " [5] Ver últimas linhas do log" -ForegroundColor White
     Write-Host " [6] Abrir pasta de Logs" -ForegroundColor White
     Write-Host " [7] Testar conexão com Google Drive" -ForegroundColor White
@@ -321,10 +509,12 @@ do {
     switch ($Opcao) {
         "1" {
             Invoke-AterSync -Simulacao $true
+            Clear-KeyBuffer
             Read-Host "Pressione Enter para voltar ao menu"
         }
         "2" {
             Invoke-AterSync -Simulacao $false
+            Clear-KeyBuffer
             Read-Host "Pressione Enter para voltar ao menu"
         }
         "3" {
@@ -339,8 +529,12 @@ do {
             Read-Host "Pressione Enter para voltar ao menu"
         }
         "4" {
-            Show-PastasLocais
-            Read-Host "`nPressione Enter para voltar ao menu"
+            if (-not (Test-Path $OrigemBase)) {
+                Write-Host "`n[ERRO] Pasta base do OneDrive não encontrada: $OrigemBase" -ForegroundColor Red
+                Read-Host "Pressione Enter para voltar ao menu"
+            } else {
+                Show-ProdutoresSelector   # volta ao menu ao apertar Q/Esc
+            }
         }
         "5" {
             Show-UltimoLog

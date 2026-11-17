@@ -101,7 +101,7 @@ Execute a opção **[9]** no menu do script (ou rode `rclone config` no terminal
 ### Checklist Pós-Configuração (Validação)
 
 1. Rode a opção **[7]** (`Testar conexão com Google Drive`) para confirmar acesso a `VALE DO RIBEIRA/FERNANDO`.
-2. Rode a opção **[4]** (`Mostrar pastas locais encontradas`) para conferir os pares `Cidade\Atividade` no OneDrive.
+2. Rode a opção **[4]** (`Selecionar produtores`) para conferir a árvore `Cidade > Atividade > Produtor` do OneDrive.
 3. Rode a opção **[1]** (`Dry-Run`) para simular a cópia antes de transferir arquivos reais.
 4. Rode a opção **[2]** (`Sincronizar AGORA`) para executar a primeira sincronização.
 
@@ -122,7 +122,7 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 | `[1]` | **Dry-Run** — Simula sincronização sem alterar nada (seguro para conferir) |
 | `[2]` | **Sincronizar AGORA** — Executa `rclone copy --update` em todas as cidades |
 | `[3]` | **Sincronizar UMA cidade** — Escolhe uma cidade da lista e sincroniza só ela |
-| `[4]` | **Mostrar pastas locais** — Lista quais pares Cidade\Atividade existem no OneDrive |
+| `[4]` | **Selecionar produtores** — TUI: árvore Cidade > Atividade > Produtor com navegação por setas |
 | `[5]` | **Ver últimas linhas do log** — Mostra as 30 últimas linhas do log mais recente |
 | `[6]` | **Abrir pasta de Logs** — Abre `logs\` no Explorer |
 | `[7]` | **Testar conexão** — Lista pastas no `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
@@ -134,6 +134,30 @@ C:\Users\randomacesso\sync-onedrive-gdrive-ater\
 | `[0]` | Sair |
 
 > O cabeçalho do menu mostra se o agendamento está **ATIVO (5 min)** ou desativado.
+
+### Seletor de produtores (opção `[4]`)
+
+Interface TUI nativa (sem módulos externos), usando `[Console]::ReadKey($true)`:
+
+| Tecla | Ação |
+| :--- | :--- |
+| `↑` / `↓` | Navegar na lista |
+| `Espaço` | Marcar/desmarcar o produtor (`[X]` / `[ ]`) |
+| `A` | Marcar/desmarcar **todos** |
+| `D` | Dry-Run **só nos marcados** |
+| `S` | Sincronizar **só os marcados** |
+| `Q` / `Esc` | Voltar ao menu |
+
+Cada produtor mostra a contagem de arquivos. `try/finally` garante que o cursor volte ao normal ao sair.
+
+### Feedback durante a execução
+
+O `rclone` roda sempre com `--log-file`, porque o `-v` escreve em **stderr** — no Windows PowerShell 5.1 isso aparece como erro vermelho (`NativeCommandError`) se capturado pelo pipeline. Em vez disso:
+
+- Cada pasta imprime `[3/15] Registro | ATIVIDADE INDIVIDUAL 1` antes de rodar.
+- Depois de cada pasta: `-> 12 novo(s), 3 atualizado(s)` (ou `-> N arquivo(s) pendente(s)` no dry-run), lido das linhas novas do log.
+- No fim do dry-run: **`--- RESUMO DO DRY-RUN ---`** com o total ou `[OK] Tudo sincronizado! Nenhuma alteração pendente encontrada.`
+- Teclas pendentes são drenadas (`Clear-KeyBuffer`) antes do `Read-Host`, então o Enter responde na hora.
 
 ### Comportamento automático do script
 
@@ -158,10 +182,16 @@ $RemotoDrive = "${NomeRemoto}:VALE DO RIBEIRA/FERNANDO"
 
 # Linhas 24-38: Cidades e Atividades monitoradas
 $Cidades = @("Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro")
-$Atividades = @("ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3")
+$Atividades = @(
+    "ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3",
+    "ATIVIDADE INDIVIDUAL 4", "ATIVIDADE INDIVIDUAL 5", "ATIVIDADE INDIVIDUAL 6",
+    "PROJETO PRODUTIVO"
+)
 ```
 
-> **Atenção**: Nomes devem bater **exatamente** (acentos, maiúsculas) com as pastas no OneDrive e no Google Drive. Use `[4]` (pastas locais) e `[7]` (pastas no Drive) para confirmar.
+> `$Cidades` × `$Atividades` = 42 combinações possíveis; só as que existem no OneDrive entram na fila (o contador `[i/N]` mostra o total real).
+
+> **Atenção**: Nomes devem bater **exatamente** (acentos, maiúsculas) com as pastas no OneDrive e no Google Drive. Use `[4]` (árvore local) e `[7]` (pastas no Drive) para confirmar.
 
 ## 🛡️ Segurança e Boas Práticas
 
