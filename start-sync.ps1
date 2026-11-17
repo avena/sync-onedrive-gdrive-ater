@@ -9,6 +9,71 @@ param(
     [switch]$Auto # Permite rodar sem menu pelo Agendador de Tarefas
 )
 
+# ================= VERIFICAÇÃO E INSTALAÇÃO DO RCLONE =================
+function Test-AndInstallRclone {
+    # Verifica se rclone já está instalado
+    if (Get-Command rclone -ErrorAction SilentlyContinue) {
+        Write-Host "[OK] rclone já está instalado: $(rclone version | Select-Object -First 1)" -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host "[AVISO] rclone não encontrado no sistema." -ForegroundColor Yellow
+
+    # Verifica gerenciadores de pacote disponíveis (preferência: winget > scoop)
+    $TemWinget = Get-Command winget -ErrorAction SilentlyContinue
+    $TemScoop  = Get-Command scoop -ErrorAction SilentlyContinue
+
+    $Gerenciador = if ($TemWinget) { "winget" } elseif ($TemScoop) { "scoop" } else { $null }
+
+    if (-not $Gerenciador) {
+        Write-Host "[ERRO] Nem winget nem scoop encontrados. Instale um deles primeiro." -ForegroundColor Red
+        Write-Host "  winget: já vem no Windows 10/11 (App Installer)" -ForegroundColor Gray
+        Write-Host "  scoop:  iwr -useb get.scoop.sh | iex" -ForegroundColor Gray
+        return $false
+    }
+
+    # Pergunta se deseja instalar
+    if (-not $Auto) {
+        $Resposta = Read-Host "Deseja instalar o rclone via $Gerenciador? (S/N)"
+        if ($Resposta -notin @('s','S','y','Y')) {
+            Write-Host "Instalação cancelada. O script não funcionará sem rclone." -ForegroundColor Red
+            return $false
+        }
+    }
+
+    Write-Host "Instalando rclone via $Gerenciador..." -ForegroundColor Cyan
+
+    try {
+        if ($Gerenciador -eq "winget") {
+            winget install --id Rclone.Rclone --source winget --accept-source-agreements --accept-package-agreements
+        } else {
+            scoop install rclone
+        }
+
+        # Recarrega o PATH para pegar o rclone recém-instalado
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+        if (Get-Command rclone -ErrorAction SilentlyContinue) {
+            Write-Host "[OK] rclone instalado com sucesso: $(rclone version | Select-Object -First 1)" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "[ERRO] Falha ao instalar rclone. Reinicie o terminal e tente novamente." -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "[ERRO] Exceção durante instalação: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Executa verificação no início (exceto modo -Auto que assume já configurado)
+if (-not $Auto) {
+    if (-not (Test-AndInstallRclone)) {
+        Read-Host "Pressione Enter para sair"
+        exit 1
+    }
+}
+
 # ================= CONFIGURAÇÕES DO PROJETO =================
 $OrigemBase  = "C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando"
 $RemotoDrive = "gdrive_saconsult:VALE DO RIBEIRA/FERNANDO"
