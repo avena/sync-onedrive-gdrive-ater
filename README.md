@@ -234,6 +234,7 @@ Script separado que alimenta o OneDrive a partir das fotos do celular (via **Syn
 ```powershell
 pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1"          # lê visitas.json se existir
 pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar    # força colar o JSON no terminal (FIM encerra)
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Conferir # lista já processadas, confere TXT/fotos e reprocessa
 ```
 
 ### Fonte primária: inbox espelhada (`.txt` + `.json`)
@@ -293,6 +294,16 @@ Depois de criar as pastas, o script extrai as **datas únicas** do relatório (`
 O script **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter` ou `S`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `M` manual / `Q` sair). Horários incompletos nunca exibem `-null` (ex.: `14:46` em vez de `14:46-null`). Para cada lote copiado, gera `coordenadas_gps.txt` com o GPS (das visitas, vindo do `_visita.json`).
 
 **`[M] Manual` (produtores vizinhos misturados no lote):** abre no Explorer (`Invoke-Item`) a **pasta de origem** das fotos do lote **e** as pastas de destino dos produtores daquele dia no OneDrive, para você copiar as fotos manualmente. Os registros do dia no `_processados.json` são marcados com **`fotos_modo: "manual"`** e `fotos_origem_sugerida` (caminho da pasta de origem). Ao final de cada dia, o resultado da triagem é gravado por produtor: `fotos_modo` (`automatico` = lote inteiro numa TAG, `individual` = foto a foto, `manual`, `pulado` = nada copiado), `fotos_copiadas` (contagem real de cópias com sucesso) e `fotos_origem_sugerida`.
+
+### Conferir / Reprocessar visitas já processadas (`-Conferir`)
+
+Como o `_processados.json` torna a triagem idempotente (visitas já registradas não reaparecem no fluxo normal), o modo **`-Conferir`** lista **todas as visitas já processadas** de todos os anos e, para cada uma, audita o destino `[OD]` sem alterar nada:
+
+- **TXT**: o `.txt` registrado em `arquivos_levados` existe na pasta do produtor? (`OK` / `FALTA`)
+- **Fotos**: quantas fotos há no destino vs `fotos_copiadas` registradas (ex.: `10 no destino / 20 registradas` — você pode ter apagado de propósito).
+- **Pasta**: o destino existe no OneDrive?
+
+Opções por visita: **`[T]`** recopia o `.txt` limpo (sem YAML) e os anexos ATV 1 da inbox `[GD]` (inbox intacta); **`[F]`** faz busca cirúrgica pela data da visita (respeitando `fotos_origem_sugerida`), lista as fotos que **faltam** no destino e pergunta `Copiar N foto(s) faltante(s)? (S/N)` — **`N` mantém tudo como está** (nunca apaga nem força fotos a mais; ideal para quando você curou 20 → 10); **`[A]`** ambos; **`[P]`** pular; **`[Q]`** sair. Ao copiar fotos, atualiza `coordenadas_gps.txt` e `fotos_copiadas` no registro (gravação atômica). Tudo fica em `triagem-log.txt` com caminhos completos `[GD]`/`[Syncthing]`/`[OD]`.
 
 ### Auditoria permanente (`runs\`)
 

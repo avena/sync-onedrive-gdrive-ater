@@ -51,6 +51,17 @@ Cruza os relatórios da inbox (`G:`) com as fotos do dia, cria as pastas no OneD
 * **Lote com fotos de vizinhos misturadas?** Aperte **`M`** (Manual): o Explorer abre a pasta de origem das fotos e as pastas dos produtores do dia no OneDrive para você copiar à mão; o registro fica marcado `fotos_modo: manual` (destacado na opção `13` do `start-sync`).
 * Cada visita confirmada é registrada em `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com **`sincronizada: false`** (os originais da inbox ficam intactos). No início, o script mostra o resumo do ano: `X triadas | Y sincronizadas | Z pendentes de envio`.
 
+### Passo 2b — Conferir / Reprocessar um dia já triado (`-Conferir`)
+
+Faltou o TXT na pasta do produtor? Apagou fotos sem querer (ou quer manter só algumas)? Liste tudo que já foi processado e confira:
+
+```powershell
+.\triagem-campo.ps1 -Conferir
+```
+
+* Mostra cada visita com **TXT: OK/FALTA** e **fotos: X no destino / Y registradas**.
+* **`T`** = recopia o TXT limpo + anexos da ATV 1 do Drive pessoal `[GD]` · **`F`** = lista as fotos que faltam e pergunta se copia (**S/N** — `N` mantém como está, sem forçar fotos a mais) · **`A`** = ambos · **`P`** = pular · **`Q`** = sair.
+
 ### Passo 3 — Enviar para o Google Drive da Consultoria (`start-sync.ps1`)
 
 Copia as pastas prontas do OneDrive para o Drive compartilhado da SA Consultoria (ignorando os `.json`) e salva os links diretos em `runs\`:

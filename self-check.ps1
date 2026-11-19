@@ -394,6 +394,45 @@ try {
     if (($regF2 | Where-Object { $_.pasta_inbox -eq $leaf1 }).fotos_modo -ne 'pulado') { throw 'triagem: visita sem status deveria ficar pulado' }
     if ($regF2.Count -ne 2) { throw 'triagem: segunda chamada duplicou registros' }
 
+    # 1s) -Conferir: listar processados, auditar TXT/fotos, reparar TXT e fotos faltantes (nao-destrutivo)
+    $SyncthingFotos = @((Join-Path $Tmp 'syncthing'))
+    $todosConf = Get-ProcessadosTodos
+    if (@($todosConf).Count -ne 2) { throw 'conferir: deveria listar 2 visitas processadas' }
+    if (-not $todosConf[0].registro_path) { throw 'conferir: registro_path ausente' }
+    $rJ = $todosConf | Where-Object { $_.pasta_inbox -eq $leaf1 }
+    $audJ = Test-VisitaDestino -Registro $rJ
+    if (@($audJ.TxtFaltando).Count -ne 0 -or $audJ.FotosNoDestino -ne 4) { throw 'conferir: auditoria inicial incorreta' }
+    # apaga o txt do destino -> auditoria detecta; reparo recopia limpo da inbox (inbox intacta)
+    Remove-Item -LiteralPath (Join-Path $dest1 'relatorio.txt') -Force
+    $audJ2 = Test-VisitaDestino -Registro $rJ
+    if (@($audJ2.TxtFaltando).Count -ne 1) { throw 'conferir: TXT faltante nao detectado' }
+    $null = Repair-VisitaTxtAnexos -Registro $rJ
+    $txtRep = Get-Content -LiteralPath (Join-Path $dest1 'relatorio.txt') -Raw
+    if ($txtRep -match '---' -or $txtRep.Trim() -ne 'Corpo do relatorio JOAO') { throw 'conferir: TXT reparado deveria estar limpo (sem YAML)' }
+    if (-not (Test-Path -LiteralPath (Join-Path $leaf1 'relatorio.txt'))) { throw 'conferir: inbox nao pode ser alterada' }
+    # fotos faltantes: origem cirurgica com 2 fotos, destino com 0 -> 2 faltantes; copia 1 -> 1 faltante
+    $visConf = Join-Path $Tmp 'syncthing\2026\11\18_visita'
+    New-Item -ItemType Directory -Path $visConf -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $visConf 'IMG_20261118_090000.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $visConf 'IMG_20261118_091000.jpg') | Out-Null
+    ([PSCustomObject]@{ data = '2026-11-18'; arquivos = @(
+        [PSCustomObject]@{ nome = 'IMG_20261118_090000.jpg'; hora = '09:00:00'; lat = -23.5; lon = -47.25 },
+        [PSCustomObject]@{ nome = 'IMG_20261118_091000.jpg'; hora = '09:10:00'; lat = -23.5; lon = -47.25 }) }) |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $visConf '_visita.json') -Encoding UTF8
+    Add-Member -InputObject $rJ -NotePropertyName fotos_origem_sugerida -NotePropertyValue $visConf -Force
+    $falt1 = Get-FotosFaltantesVisita -Registro $rJ
+    if (@($falt1).Count -ne 2) { throw "conferir: esperava 2 fotos faltantes, obtidas $(@($falt1).Count)" }
+    Copy-Item -LiteralPath (Join-Path $visConf 'IMG_20261118_090000.jpg') -Destination $dest1 -Force
+    $falt2 = Get-FotosFaltantesVisita -Registro $rJ
+    if (@($falt2).Count -ne 1) { throw 'conferir: apos copiar 1, deveria faltar 1' }
+    # save atomico: sem registro_path no JSON, campos preservados, sem .tmp residual
+    Save-ProcessadosPorArquivo -Registros $todosConf
+    if ((Get-Content -LiteralPath $regPath -Raw) -match 'registro_path') { throw 'conferir: registro_path nao pode ir para o JSON' }
+    $regConf = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if ($regConf.Count -ne 2) { throw 'conferir: save perdeu registros' }
+    if (($regConf | Where-Object { $_.pasta_inbox -eq $leaf1 }).sincronizada -ne $true) { throw 'conferir: save sobrescreveu sincronizada' }
+    if (Test-Path -LiteralPath "$regPath.tmp") { throw 'conferir: .tmp residual' }
+
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
     if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
     if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }
