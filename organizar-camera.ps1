@@ -30,6 +30,9 @@
     unidade secundaria conectada alem de C:.
 .PARAMETER Copiar
     Copia em vez de mover da Camera\ (mantem o bruto no Syncthing).
+.PARAMETER ReconstruirIndice
+    So (re)gera o _indice_visitas.json na raiz da Organizada a partir dos
+    _visita.json existentes (zero EXIF, nao move nada) e copia para o E: se presente.
 .EXAMPLE
     .\organizar-camera.ps1 -SemMenu -WhatIf   # simulacao (254 clusters esperados)
     .\organizar-camera.ps1                    # interativo (menu campo/casa)
@@ -45,7 +48,8 @@ param(
     [switch]$SincronizarExterno,
     [switch]$MoverParaExterno,
     [string]$DriveExterno,
-    [switch]$Copiar
+    [switch]$Copiar,
+    [switch]$ReconstruirIndice
 )
 
 Set-StrictMode -Version Latest
@@ -202,6 +206,52 @@ function New-VisitaJson {
             }
         })
     }
+}
+
+# ================= INDICE CENTRAL DE VISITAS (_indice_visitas.json, zero EXIF) =================
+function New-IndiceVisitas {
+    # Le APENAS os _visita.json (nunca abre .jpg) e mapeia data -> lista de visitas do dia.
+    param([string]$Raiz)
+    $indice = [ordered]@{}
+    if (Test-Path -LiteralPath $Raiz) {
+        foreach ($vj in @(Get-ChildItem -LiteralPath $Raiz -Recurse -File -Filter '_visita.json')) {
+            try { $v = Get-Content -LiteralPath $vj.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+            $data = [string](Get-PropValueSafe $v 'data')
+            if (-not $data) { continue }
+            $pastaRel = $vj.Directory.FullName.Substring($Raiz.Length + 1)
+            $entrada = [PSCustomObject]@{
+                pasta_relativa = $pastaRel
+                hora_inicio    = [string](Get-PropValueSafe $v 'hora_inicio')
+                hora_fim       = [string](Get-PropValueSafe $v 'hora_fim')
+                qtd_fotos      = (Get-PropValueSafe $v 'qtd_fotos')
+                lat_media      = (Get-PropValueSafe $v 'lat_media')
+                lon_media      = (Get-PropValueSafe $v 'lon_media')
+                raio_metros    = (Get-PropValueSafe $v 'raio_metros')
+                visita_json    = Join-Path $pastaRel '_visita.json'
+            }
+            if (-not $indice.Contains($data)) { $indice[$data] = [System.Collections.Generic.List[object]]::new() }
+            $indice[$data].Add($entrada)
+        }
+    }
+    foreach ($k in @($indice.Keys)) { $indice[$k] = @($indice[$k] | Sort-Object hora_inicio, pasta_relativa) }
+    $dest = Join-Path $Raiz '_indice_visitas.json'
+    ConvertTo-Json -InputObject $indice -Depth 6 | Set-Content -LiteralPath $dest -Encoding UTF8
+    return $dest
+}
+
+function Get-PropValueSafe {
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $null }
+    $p = $Obj.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+function Copy-IndiceParaExterno {
+    param([string]$IndicePath, [string]$DestinoE)
+    if (-not $DestinoE -or -not (Test-Path -LiteralPath $IndicePath)) { return }
+    if (-not (Test-Path -LiteralPath $DestinoE)) { New-Item -ItemType Directory -Force -Path $DestinoE | Out-Null }
+    Copy-Item -LiteralPath $IndicePath -Destination (Join-Path $DestinoE '_indice_visitas.json') -Force
 }
 
 # ================= ESTADO PERSISTENTE (estado-camera.json, versionado) =================
@@ -393,6 +443,21 @@ function Read-Confirmacao {
 }
 
 # ================= FLUXO PRINCIPAL =================
+if ($ReconstruirIndice) {
+    if (-not (Test-Path -LiteralPath $DestinoLocal)) { throw "Pasta organizada nao encontrada: $DestinoLocal" }
+    $idx = New-IndiceVisitas -Raiz $DestinoLocal
+    $nVisitas = 0
+    $idxObj = Get-Content -LiteralPath $idx -Raw | ConvertFrom-Json
+    foreach ($p in $idxObj.PSObject.Properties) { $nVisitas += @($p.Value).Count }
+    Write-Host "[OK] Indice reconstruido (zero EXIF, nada movido): $idx ($nVisitas visita(s))" -ForegroundColor Green
+    $driveIdx = Get-DriveExterno
+    if ($driveIdx) {
+        Copy-IndiceParaExterno -IndicePath $idx -DestinoE "${driveIdx}:\Sync\Camera_Celular_Organizada"
+        Write-Host "[OK] Indice copiado para ${driveIdx}:\Sync\Camera_Celular_Organizada" -ForegroundColor Green
+    }
+    return
+}
+
 $estado = Get-EstadoCamera
 Write-Host "ORGANIZAR CAMERA: $OrigemCamera -> $DestinoLocal" -ForegroundColor White
 if (-not (Test-Path -LiteralPath $OrigemCamera)) { throw "Pasta de origem nao encontrada: $OrigemCamera" }
@@ -493,6 +558,17 @@ if ($sincronizar -and $drive) {
     Write-Host ("[OK] {0} arquivo(s) {1} para $destinoE ({2:N2} GB)" -f $syncFeitos.Count, $acao, ($sb / 1GB)) -ForegroundColor Green
 }
 
+# ---- Indice central de visitas (zero EXIF; reflete a arvore pos-sync/mover) ----
+$raizIndice = $DestinoLocal
+if ($sincronizar -and $moverE -and $destinoE -and (Test-Path -LiteralPath $destinoE)) { $raizIndice = $destinoE }
+$idxPath = New-IndiceVisitas -Raiz $raizIndice
+if ($raizIndice -ne $DestinoLocal) {
+    # MOVER esvaziou o C:; mantem o indice tambem na raiz local para a triagem.
+    Copy-Item -LiteralPath $idxPath -Destination (Join-Path $DestinoLocal '_indice_visitas.json') -Force
+}
+if ($sincronizar -and $drive) { Copy-IndiceParaExterno -IndicePath $idxPath -DestinoE $destinoE }
+Write-Host "[OK] Indice de visitas atualizado: $idxPath" -ForegroundColor Cyan
+
 # ---- Estado persistente ----
 $processados = @($metadados | ForEach-Object { $_.Arquivo.Name }) + @($videos | ForEach-Object { $_.Arquivo.Name })
 $ultima = if ($processados.Count -gt 0) { ($processados | Sort-Object | Select-Object -Last 1) } else { $estado.ultima_foto_processada }
@@ -515,6 +591,7 @@ $runJson = Join-Path $RunsDir "${ts}__CAMERA__organizar-camera.json"
 $registro = [PSCustomObject]@{
     script = 'organizar-camera'; timestamp = $ts
     origem = $OrigemCamera; destino_local = $DestinoLocal; destino_externo = $destinoE
+    indice_visitas = $idxPath
     parametros = [PSCustomObject]@{ sem_menu = [bool]$SemMenu; sincronizar_externo = [bool]$SincronizarExterno; mover_para_externo = $moverE; copiar = [bool]$Copiar }
     novas = [PSCustomObject]@{ fotos = $metadados.Count; videos = $videos.Count }
     clusters = [PSCustomObject]@{ total = $clusters.Count; visitas = $visitas.Count; avulsos = $avulsos.Count; fotos_visitas = $fv; fotos_avulsas = $fa }

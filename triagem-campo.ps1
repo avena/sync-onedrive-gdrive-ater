@@ -7,8 +7,10 @@
     com pares .txt/.json (schema_version 1.0). Fallback: visitas.json manual ou colagem (FIM).
     Etapa 1: revisao interativa (TUI) -> cria pastas no OneDrive, grava .txt limpo (sem YAML)
     e .json, e arquiva os originais em _processados.
-    Etapa 2: filtra fotos do Syncthing pelo dia exato (data AAAA-MM-DD), agrupa por 40 min,
-    pre-sugere o produtor por horario/periodo (Enter aceita), distribui por TAG e gera
+    Etapa 2: busca cirurgica pelas datas do relatorio (so <AAAA>\<MM> alvo; nome/hora/GPS
+    lidos direto do _visita.json, zero EXIF nas visitas; avulsas/brutas pre-filtradas pelo
+    nome *AAAAMMDD*). Visitas ja viram lotes pre-agrupados; avulsas agrupam por 40 min.
+    Pre-sugere o produtor por horario/periodo (Enter ou S aceita), distribui por TAG e gera
     coordenadas_gps.txt. Registra manifesto de auditoria em runs\ (nunca apagado).
 .PARAMETER Colar
     Forca colagem do JSON no terminal (ignora inbox e visitas.json).
@@ -329,6 +331,118 @@ function Get-FotoMetadados {
     }
 }
 
+# Formata hora_inicio/hora_fim sem nunca exibir "14:46-null" (vazio ou string "null").
+function Format-HorarioVisita {
+    param($HoraInicio, $HoraFim)
+    $ini = ([string]$HoraInicio).Trim(); $fim = ([string]$HoraFim).Trim()
+    if ($ini -eq 'null') { $ini = '' }
+    if ($fim -eq 'null') { $fim = '' }
+    if ($ini -and $fim) { return "$ini-$fim" }
+    if ($ini) { return $ini }
+    return $fim
+}
+
+# Item de foto no mesmo formato de Get-FotoMetadados + LoteVisita (pasta de visita ja agrupada).
+function New-FotoItem {
+    param([System.IO.FileInfo]$Arquivo, [datetime]$DataHora, $Lat, $Lon, [string]$LoteVisita)
+    return [PSCustomObject]@{
+        Arquivo = $Arquivo; DataHora = $DataHora
+        DataStr = $DataHora.ToString('yyyy-MM-dd'); HoraStr = $DataHora.ToString('HH:mm:ss')
+        Lat = $Lat; Lon = $Lon; TemGps = ($null -ne $Lat -and $null -ne $Lon)
+        LoteVisita = $LoteVisita
+    }
+}
+
+# ================= BUSCA CIRURGICA POR DATA (zero EXIF nas visitas organizadas) =================
+function Get-FotosCirurgico {
+    # Em vez de varrer o acervo inteiro: acessa so <AAAA>\<MM> dos meses alvo,
+    # le nome/hora/lat/lon direto do _visita.json (ZERO System.Drawing.Image),
+    # e pre-filtra avulsas/brutas pelo padrao *AAAAMMDD* no nome antes do EXIF.
+    param([string[]]$Raizes, [string[]]$DatasAlvo, [string[]]$Extensoes)
+    $fotos  = [System.Collections.Generic.List[object]]::new()
+    $vistos = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $meses   = @($DatasAlvo | ForEach-Object { $_.Substring(0, 7) } | Sort-Object -Unique)
+    $padroes = @($DatasAlvo | ForEach-Object { '*' + ($_ -replace '-', '') + '*' })
+
+    foreach ($raiz in $Raizes) {
+        $ehOrganizada = @(Get-ChildItem -LiteralPath $raiz -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d{4}$' }).Count -gt 0
+        if ($ehOrganizada) {
+            foreach ($mes in $meses) {
+                $pastaMes = Join-Path $raiz ($mes -replace '-', '\')
+                if (-not (Test-Path -LiteralPath $pastaMes)) { continue }
+                $diasDoMes = @($DatasAlvo | Where-Object { $_.Substring(0, 7) -eq $mes })
+                # Pastas <DD>_visita* dos dias alvo: lote pre-agrupado via _visita.json
+                foreach ($dir in @(Get-ChildItem -LiteralPath $pastaMes -Directory | Where-Object { $_.Name -match '^\d{2}_visita' })) {
+                    $dd = $dir.Name.Substring(0, 2)
+                    $dataDir = @($diasDoMes | Where-Object { $_.Substring(8, 2) -eq $dd })
+                    if ($dataDir.Count -eq 0) { continue }
+                    $loteKey = $dir.FullName.Substring($raiz.Length + 1)
+                    $vj = $null
+                    $vjPath = Join-Path $dir.FullName '_visita.json'
+                    if (Test-Path -LiteralPath $vjPath) {
+                        try { $vj = Get-Content -LiteralPath $vjPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+                    }
+                    $arqsVisita = Get-PropValue $vj 'arquivos'
+                    if ($vj -and $arqsVisita) {
+                        $dataVisita = [string](Get-PropValue $vj 'data')
+                        foreach ($a in @($arqsVisita)) {
+                            $nome = [string](Get-PropValue $a 'nome')
+                            if (-not $nome) { continue }
+                            $arqPath = Join-Path $dir.FullName $nome
+                            if (-not (Test-Path -LiteralPath $arqPath)) { continue }   # movida p/ E: -> outra raiz resolve
+                            if (-not $vistos.Add($nome)) { continue }
+                            $fi = Get-Item -LiteralPath $arqPath
+                            $dt = $null
+                            try { $dt = [datetime]::ParseExact("$dataVisita $([string](Get-PropValue $a 'hora'))", 'yyyy-MM-dd HH:mm:ss', $null) } catch { }
+                            if (-not $dt) { $dt = $fi.LastWriteTime }
+                            $fotos.Add((New-FotoItem -Arquivo $fi -DataHora $dt -Lat (Get-PropValue $a 'lat') -Lon (Get-PropValue $a 'lon') -LoteVisita $loteKey))
+                        }
+                    } else {
+                        # Sem _visita.json legivel: fallback EXIF so nos arquivos do dia (pre-filtro no nome)
+                        foreach ($f in @(Get-ChildItem -LiteralPath $dir.FullName -File | Where-Object {
+                            $Extensoes -contains $_.Extension.ToLower() -and $(foreach ($p in $padroes) { if ($_.Name -like $p) { $true; break } })
+                        })) {
+                            if ($vistos.Add($f.Name)) {
+                                $m = Get-FotoMetadados -Arquivo $f
+                                Add-Member -InputObject $m -NotePropertyName LoteVisita -NotePropertyValue $loteKey -Force
+                                $fotos.Add($m)
+                            }
+                        }
+                    }
+                }
+                # Avulsas soltas na raiz do mes: pre-filtro *AAAAMMDD* antes de ler EXIF
+                foreach ($f in @(Get-ChildItem -LiteralPath $pastaMes -File | Where-Object {
+                    $Extensoes -contains $_.Extension.ToLower() -and $_.Name -notlike '.*' -and $_.Name -notlike '~syncthing~*' -and
+                    $(foreach ($p in $padroes) { if ($_.Name -like $p) { $true; break } })
+                })) {
+                    if ($vistos.Add($f.Name)) {
+                        $m = Get-FotoMetadados -Arquivo $f
+                        Add-Member -InputObject $m -NotePropertyName LoteVisita -NotePropertyValue $null -Force
+                        $fotos.Add($m)
+                    }
+                }
+            }
+        } else {
+            # Raiz bruta (Camera\): pre-filtro pelo nome *AAAAMMDD* ou LastWriteTime do dia
+            foreach ($f in @(Get-ChildItem -LiteralPath $raiz -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                $Extensoes -contains $_.Extension.ToLower() -and $_.Name -notlike '.*' -and $_.Name -notlike '~syncthing~*'
+            })) {
+                $casa = $false
+                foreach ($p in $padroes) { if ($f.Name -like $p) { $casa = $true; break } }
+                if (-not $casa) { $casa = $DatasAlvo -contains $f.LastWriteTime.ToString('yyyy-MM-dd') }
+                if (-not $casa) { continue }
+                if ($vistos.Add($f.Name)) {
+                    $m = Get-FotoMetadados -Arquivo $f
+                    Add-Member -InputObject $m -NotePropertyName LoteVisita -NotePropertyValue $null -Force
+                    $fotos.Add($m)
+                }
+            }
+        }
+    }
+    return , @($fotos | Sort-Object DataHora)
+}
+
 # ================= GPS TXT (retorna objeto p/ manifesto runs\) =================
 function Export-CoordenadasTxt {
     [CmdletBinding()]
@@ -399,6 +513,13 @@ function Get-SugestaoTag {
     }
     if ($casaram.Count -eq 1) { return $casaram[0].tag }
     return $null
+}
+
+# Enter (vazio) ou S confirmam a sugestao ativa; sem sugestao, S segue como tag invalida.
+function Resolve-TagSugestao {
+    param([string]$Escolha, $Sugestao)
+    if (($Escolha -eq '' -or $Escolha -eq 'S') -and $Sugestao) { return $Sugestao }
+    return $Escolha
 }
 
 # ================= EDITAR VISITA (data / periodo / hora / cidade / atividade / nome) =================
@@ -493,7 +614,8 @@ function Show-RevisaoVisitas {
             for ($i = $Offset; $i -le $Fim; $i++) {
                 $It = $Itens[$i]; $V = $It.Visita
                 $per = [string]$V.periodo
-                if ($V.hora_inicio -or $V.hora_fim) { $per = ("$per $($V.hora_inicio)-$($V.hora_fim)").Trim() }
+                $hor = Format-HorarioVisita $V.hora_inicio $V.hora_fim
+                if ($hor) { $per = ("$per $hor").Trim() }
                 $extra = if ($per) { " ($per)" } else { "" }
                 $Linha = " [$($It.Dia.data)]$extra $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)"
                 if ($i -eq $Atual) { Write-Host $Linha -ForegroundColor Black -BackgroundColor Gray }
@@ -694,22 +816,14 @@ if ($RaizesExistentes.Count -eq 0) {
     exit 0
 }
 
-Write-Host "`n=== ETAPA 2: LENDO DATA/HORA E GPS DAS FOTOS DO SYNCTHING ===" -ForegroundColor Cyan
-# Varre as raízes em ordem (Organizada C: -> E: -> Camera bruta), recursivo, com dedup por nome
-$ArquivosFoto = [System.Collections.Generic.List[object]]::new()
-$NomesVistos = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-foreach ($raiz in $RaizesExistentes) {
-    foreach ($f in @(Get-ChildItem -LiteralPath $raiz -Recurse -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() -and $_.Name -notlike '.*' -and $_.Name -notlike '~syncthing~*' })) {
-        if ($NomesVistos.Add($f.Name)) { $ArquivosFoto.Add($f) }
-    }
-}
-$TotalArquivos = $ArquivosFoto.Count; $Idx = 0
-$TodasFotos = @($ArquivosFoto | ForEach-Object {
-    $Idx++
-    Write-Progress -Activity "Indexando fotos" -Status "$Idx / $TotalArquivos" -PercentComplete (($Idx / [Math]::Max($TotalArquivos, 1)) * 100)
-    Get-FotoMetadados -Arquivo $_
-} | Sort-Object DataHora)
-Write-Progress -Activity "Indexando fotos" -Completed
+Write-Host "`n=== ETAPA 2: BUSCA CIRURGICA POR DATA (ZERO EXIF NAS VISITAS ORGANIZADAS) ===" -ForegroundColor Cyan
+# Datas unicas do relatorio -> so os meses/dias alvo sao acessados (nada de varrer o acervo).
+$DatasAlvo = @($RelatorioDias | ForEach-Object { $_.data } | Sort-Object -Unique)
+Write-Host " Datas alvo: $($DatasAlvo -join ', ') | Raizes: $($RaizesExistentes -join ' | ')" -ForegroundColor DarkGray
+# Organizada C: -> E: -> Camera bruta, dedup por nome; visitas vem prontas do _visita.json.
+$TodasFotos = Get-FotosCirurgico -Raizes $RaizesExistentes -DatasAlvo $DatasAlvo -Extensoes $ExtensoesFoto
+$QtdVisita = @($TodasFotos | Where-Object { $_.LoteVisita }).Count
+Write-Host " [OK] $($TodasFotos.Count) foto(s) do(s) dia(s) alvo ($QtdVisita via _visita.json, sem abrir EXIF)" -ForegroundColor Green
 
 # ================= ETAPA 2: DISTRIBUIR FOTOS (PRE-SUGESTAO + ENTER) =================
 $Sair = $false
@@ -726,17 +840,23 @@ foreach ($Dia in $RelatorioDias) {
     Write-Host " Produtores visitados neste dia:" -ForegroundColor Yellow
     foreach ($v in $Dia.visitas) {
         $per = [string]$v.periodo
-        if ($v.hora_inicio -or $v.hora_fim) { $per = ("$per $($v.hora_inicio)-$($v.hora_fim)").Trim() }
+        $hor = Format-HorarioVisita $v.hora_inicio $v.hora_fim
+        if ($hor) { $per = ("$per $hor").Trim() }
         $extra = if ($per) { " ($per)" } else { "" }
         Write-Host "   [$($v.tag)]$extra $($v.cidade) | $($v.atividade) | $($v.produtor_pasta)" -ForegroundColor Green
     }
-    Write-Host "   [Enter] Aceitar sugestao | [A/B/C] TAG | [P] Pular | [I] Foto a foto | [Q] Sair" -ForegroundColor Gray
+    Write-Host "   [Enter/S] Aceitar sugestao | [A/B/C] TAG | [P] Pular | [I] Foto a foto | [Q] Sair" -ForegroundColor Gray
     Write-Host "------------------------------------------------------------------------" -ForegroundColor Cyan
 
-    # Agrupa fotos proximas no tempo (janela de deslocamento)
+    # 1) Lotes pre-agrupados por visita (tempo+GPS do organizar-camera) — preserva a separacao original
     $Lotes = [System.Collections.Generic.List[object]]::new()
+    foreach ($g in @($FotosDoDia | Where-Object { $_.LoteVisita } | Group-Object -Property LoteVisita)) {
+        $Lotes.Add(@($g.Group | Sort-Object DataHora))
+    }
+    # 2) Avulsas/brutas (sem visita): agrupa por proximidade no tempo (janela de deslocamento)
+    $Restantes = @($FotosDoDia | Where-Object { -not $_.LoteVisita } | Sort-Object DataHora)
     $LoteAtual = [System.Collections.Generic.List[object]]::new()
-    foreach ($f in $FotosDoDia) {
+    foreach ($f in $Restantes) {
         if ($LoteAtual.Count -eq 0) { $LoteAtual.Add($f) }
         else {
             $DiffMin = ($f.DataHora - $LoteAtual[-1].DataHora).TotalMinutes
@@ -745,20 +865,21 @@ foreach ($Dia in $RelatorioDias) {
         }
     }
     if ($LoteAtual.Count -gt 0) { $Lotes.Add($LoteAtual.ToArray()) }
+    $Lotes = @($Lotes | Sort-Object { $_[0].DataHora })
 
     $NumLote = 0
     foreach ($Lote in $Lotes) {
         $NumLote++
         $QtdGps = @($Lote | Where-Object { $_.TemGps }).Count
         $Sugestao = Get-SugestaoTag -Lote $Lote -Visitas $Dia.visitas
-        Write-Host "`n Lote #$NumLote : $($Lote.Count) foto(s) | $($Lote[0].HoraStr) as $($Lote[-1].HoraStr) | GPS: $QtdGps" -ForegroundColor Cyan
+        $OrigemLote = if ($Lote[0].LoteVisita) { " | visita: $(Split-Path $Lote[0].LoteVisita -Leaf)" } else { '' }
+        Write-Host "`n Lote #$NumLote : $($Lote.Count) foto(s) | $($Lote[0].HoraStr) as $($Lote[-1].HoraStr) | GPS: $QtdGps$OrigemLote" -ForegroundColor Cyan
         if ($Sugestao) {
             $vSug = $Dia.visitas | Where-Object { $_.tag -eq $Sugestao } | Select-Object -First 1
-            Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER para aceitar" -ForegroundColor Yellow
+            Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER ou S para aceitar" -ForegroundColor Yellow
         }
 
-        $Escolha = (Read-Host " TAG (A/B/C), Enter aceita sugestao, P pula, I individual, Q sair").Trim().ToUpper()
-        if ($Escolha -eq '' -and $Sugestao) { $Escolha = $Sugestao }
+        $Escolha = Resolve-TagSugestao -Escolha ((Read-Host " TAG (A/B/C), Enter/S aceita sugestao, P pula, I individual, Q sair").Trim().ToUpper()) -Sugestao $Sugestao
 
         if ($Escolha -eq 'Q') { Write-Host "   -> Triagem encerrada." -ForegroundColor Yellow; Write-TriagemLog "ENCERRADO no lote #$NumLote de $($Dia.data)"; $Sair = $true; break }
         if ($Escolha -eq 'P' -or [string]::IsNullOrWhiteSpace($Escolha)) { Write-Host "   -> Lote pulado." -ForegroundColor DarkGray; continue }

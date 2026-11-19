@@ -28,7 +28,7 @@ C:\Users\randomacesso\Sync\Camera_Celular\Camera
 - No celular, o Syncthing sincroniza `DCIM/Camera` em modo **Enviar apenas** para essa pasta.
 - Estrutura real do Syncthing: `Sync\Camera_Celular\` contém `Camera\` (fotos da câmera, `IMG_AAAAMMDD_HHMMSS.jpg`), `Screenshots\`, `CamScanner\`, `PlantNet\`, `Restored\`, `ScreenRecorder\`. O script usa **só `Camera\`** (as fotos de campo); os `~syncthing~*.tmp` (sync em andamento) são ignorados.
 - **Ative as tags de localização/GPS na câmera** do celular — o script lê o GPS do EXIF para gerar `coordenadas_gps.txt`.
-- O script **filtra as fotos pelo dia exato** (`data` `AAAA-MM-DD` do relatório), comparando com o EXIF `DateTimeOriginal`, o padrão `AAAAMMDD` do nome do arquivo ou o `LastWriteTime`.
+- O script **filtra as fotos pelo dia exato** (`data` `AAAA-MM-DD` do relatório) com **busca cirúrgica**: acessa só os meses/dias alvo, lê nome/hora/GPS direto do `_visita.json` das visitas organizadas (**zero EXIF**) e pré-filtra avulsas/brutas pelo padrão `*AAAAMMDD*` no nome (ou `LastWriteTime`) antes de abrir qualquer foto.
 - As fotos são **copiadas** (não movidas) — a pasta do Syncthing continua sendo o "negativo" da câmera.
 
 ### 2. Relatórios (.txt/.json) → inbox espelhada do Google Drive pessoal
@@ -53,7 +53,7 @@ Relato / Áudio
  Fotos do celular  →  Syncthing  →  C:\Users\randomacesso\Sync\Camera_Celular\Camera
    └─ triagem-campo.ps1
         ├─ Etapa 1: revisão TUI → cria pastas no OneDrive + grava .txt limpo/.json + arquiva _processados
-        └─ Etapa 2: filtra fotos por dia, agrupa 40 min, pré-sugere produtor (Enter), copia fotos + coordenadas_gps.txt
+        └─ Etapa 2: busca cirúrgica por data (_visita.json, zero EXIF), lotes por visita + 40 min, pré-sugere produtor (Enter/S), copia fotos + coordenadas_gps.txt
              └─ OneDrive: ...\Fernando\<Cidade>\<Atividade>\<AAAA-MM-DD-Produtor - RESUMO>
                   └─ start-sync.ps1 (rclone copy --update --exclude *.json)
                        └─ Google Drive SA Consultoria: VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>
@@ -264,7 +264,13 @@ Antes de tocar no disco, o script abre uma lista navegável com `[Console]::Read
 
 ### Etapa 2 — Triagem inteligente de fotos + GPS
 
-Depois de criar as pastas, o script indexa as fotos das raízes (`$SyncthingFotos`: Organizada C: → E: → `Camera` bruta, dedup por nome), filtra pelo dia exato (`data`), agrupa por bloco de horário (intervalo de 40 min) e **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `Q` sair). Para cada lote copiado, extrai o GPS EXIF e gera `coordenadas_gps.txt`.
+Depois de criar as pastas, o script extrai as **datas únicas** do relatório (`$DatasAlvo`) e faz **busca cirúrgica** nas raízes (`$SyncthingFotos`: Organizada C: → E: → `Camera` bruta, dedup por nome) — **sem varrer o acervo inteiro**:
+
+- **Organizada (C:/E:)**: acessa diretamente só `<AAAA>\<MM>` dos meses alvo. Cada pasta `<DD>_visita*` do dia com `_visita.json` vira um **lote pré-agrupado** (preserva a separação por tempo+GPS do `organizar-camera.ps1`), com `nome`/`hora`/`lat`/`lon` lidos **direto do JSON — zero abertura de `.jpg` via EXIF**. Avulsas soltas na raiz do mês são pré-filtradas pelo padrão `*AAAAMMDD*` no nome antes de ler EXIF.
+- **Bruta (`Camera\`)**: pré-filtro pelo padrão `*AAAAMMDD*` no nome **ou** `LastWriteTime` do dia antes de chamar `Get-FotoMetadados` (fotos de outros dias nunca são abertas).
+- Fotos sem visita (avulsas/brutas) agrupam por bloco de horário (intervalo de 40 min).
+
+O script **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter` ou `S`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `Q` sair). Horários incompletos nunca exibem `-null` (ex.: `14:46` em vez de `14:46-null`). Para cada lote copiado, gera `coordenadas_gps.txt` com o GPS (das visitas, vindo do `_visita.json`).
 
 ### Auditoria permanente (`runs\`)
 
@@ -278,17 +284,19 @@ Move as fotos da câmera bruta para **fora da pasta sincronizada**, agrupadas po
 pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1" -SemMenu -WhatIf  # simulação (não move nada)
 pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1"                   # interativo (menu campo/casa)
 pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1" -SemMenu -SincronizarExterno -MoverParaExterno
+pwsh -ExecutionPolicy Bypass -File ".\organizar-camera.ps1" -ReconstruirIndice  # só (re)gera o índice, não move nada
 ```
 
 - **Origem**: `C:\Users\randomacesso\Sync\Camera_Celular\Camera` · **Destino local**: `C:\Users\randomacesso\Sync\Camera_Celular_Organizada\` (irmã da sincronizada, não volta ao celular) · **Externo**: `<E|outra>:\Sync\Camera_Celular_Organizada\` (prioriza `E:`; `-DriveExterno "E"` força a letra).
 - **Hierarquia**: visitas (clusters **≥ 3 fotos**) em `<AAAA>\<MM>\<DD>_visita\` — ou `<DD>_visita_1`, `<DD>_visita_2`… quando há 2+ visitas no mesmo dia (ordem cronológica); avulsas (1–2 fotos) na raiz `<AAAA>\<MM>\`; vídeos (`VID_*`/`.mp4/.mov/.3gp/.mkv`) em `Videos\<AAAA>\<MM>\`.
 - **Regra de cluster** (Haversine em metros): `(Δt ≤ 40 min E d ≤ 500 m)` OU `(mesmo dia E Δt ≤ 120 min E d ≤ 300 m)` OU `(sem GPS E Δt ≤ 40 min)`. Data/hora: EXIF `DateTimeOriginal` → nome `AAAAMMDD_HHMMSS` → `LastWriteTime`.
 - **`_visita.json`** em cada pasta de visita: `data`, `indice_visita`, `pasta_nome`, `hora_inicio`/`hora_fim`, `duracao_minutos`, `qtd_fotos`, `fotos_com_gps`, `lat_media`/`lon_media`, `raio_metros`, `google_maps_url` e `arquivos` (nome, hora, lat, lon, modelo_camera, tamanho_bytes).
+- **`_indice_visitas.json`** (raiz da Organizada, leve): gerado/atualizado ao final de **toda execução real** (e copiado ao E: na sincronização) lendo **apenas os `_visita.json` — zero EXIF**. Mapeia cada `data` (`AAAA-MM-DD`) → lista de visitas do dia com `pasta_relativa` (ex.: `2026\11\06_visita_1`), `hora_inicio`/`hora_fim`, `qtd_fotos`, `lat_media`/`lon_media`, `raio_metros` e o caminho do `_visita.json`. **`-ReconstruirIndice`** (re)gera o índice sobre o acervo já organizado **sem mover nada** (útil uma única vez sobre as 137 visitas existentes). Com `-MoverParaExterno`, o índice é gerado sobre a árvore do E: e copiado de volta à raiz do C:.
 - **`estado-camera.json`** (versionado): `ultima_execucao`, `ultima_foto_processada`, totais organizados no C:, `ultima_sincronizacao_e` e pendências C:→E: (arquivos/bytes). A cada execução o script mostra fotos/vídeos novos, visitas agrupadas e GB pendentes de sync.
 - **Cenário A — disco externo ausente (campo)**: avisa e pergunta se organiza localmente no C: (direto com `-SemMenu`), movendo da `Camera\` (libera o celular via Syncthing).
 - **Cenário B — disco presente (casa)**: menu TUI (↑/↓ + Enter): [1] organizar novas + sincronizar tudo ao E: (pergunta manter cópia no C: ou **mover** para liberar o SSD), [2] só organizar no C:, [3] só sincronizar/mover o que já está no C:, [4] cancelar.
-- **Parâmetros**: `-SemMenu`, `-SincronizarExterno`, `-MoverParaExterno`, `-DriveExterno "E"`, `-Copiar` (copia em vez de mover da `Camera\`), `-WhatIf`. Manifesto por execução: `runs\AAAA-MM-DD_HH-mm-ss__CAMERA__organizar-camera.json`.
-- **Integração**: o `triagem-campo.ps1` lê a pasta Organizada (C: e E:) antes da `Camera\` bruta, com dedup por nome — fotos recém-chegadas ainda não organizadas continuam sendo encontradas.
+- **Parâmetros**: `-SemMenu`, `-SincronizarExterno`, `-MoverParaExterno`, `-DriveExterno "E"`, `-Copiar` (copia em vez de mover da `Camera\`), `-ReconstruirIndice` (só regenera o `_indice_visitas.json`, zero EXIF, não move nada), `-WhatIf`. Manifesto por execução: `runs\AAAA-MM-DD_HH-mm-ss__CAMERA__organizar-camera.json`.
+- **Integração**: o `triagem-campo.ps1` lê a pasta Organizada (C: e E:) antes da `Camera\` bruta, com dedup por nome — e aproveita os `_visita.json`/`_indice_visitas.json` para busca cirúrgica por data **sem reler EXIF do acervo**. Fotos recém-chegadas ainda não organizadas continuam sendo encontradas na bruta (pré-filtro por nome/data).
 - **Baseline real (17/11/2026)**: 1.368 fotos (96,2% com GPS, Xiaomi POCO F4 GT) + 1 vídeo → **254 clusters / 137 visitas / 117 avulsos**; o `-WhatIf` reproduz esses números.
 
 ## 🎙️ Organização dos Áudios do Gravador (`organizar-audios.ps1`)

@@ -205,6 +205,73 @@ try {
     New-Item -ItemType File -Path (Join-Path $colP 'IMG_20260402_090000.jpg') | Out-Null
     if ((Split-Path (Get-NomeSemColisaoCamera -Pasta $colP -Arquivo $imgT) -Leaf) -ne 'IMG_20260402_090000__2.jpg') { throw 'camera: colisao __2 falhou' }
 
+    # 1m) triagem: busca cirurgica por data + leitura zero-EXIF via _visita.json + dedup
+    $orgC = Join-Path $Tmp 'orgC'; $orgE = Join-Path $Tmp 'orgE'; $bruta = Join-Path $Tmp 'bruta'
+    $visDir = Join-Path $orgC '2026\11\06_visita_1'
+    New-Item -ItemType Directory -Path $visDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $bruta -Force | Out-Null
+    # arquivos vazios: se o script abrisse EXIF nao haveria GPS/hora -> prova de leitura via JSON
+    New-Item -ItemType File -Path (Join-Path $visDir 'IMG_20261106_144600.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $visDir 'foto_sem_padrao.jpg') | Out-Null
+    $vjTeste = [PSCustomObject]@{
+        data = '2026-11-06'; hora_inicio = '14:46:00'; hora_fim = '15:30:00'; qtd_fotos = 2
+        lat_media = -23.5; lon_media = -47.25; raio_metros = 10.0
+        arquivos = @(
+            [PSCustomObject]@{ nome = 'IMG_20261106_144600.jpg'; hora = '14:46:00'; lat = -23.5; lon = -47.25 },
+            [PSCustomObject]@{ nome = 'foto_sem_padrao.jpg'; hora = '15:30:00'; lat = -23.501; lon = -47.251 }
+        )
+    }
+    $vjTeste | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $visDir '_visita.json') -Encoding UTF8
+    # avulsa do dia alvo na raiz do mes + foto de OUTRO dia (nao pode entrar)
+    New-Item -ItemType File -Path (Join-Path $orgC '2026\11\IMG_20261106_160000.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $orgC '2026\11\IMG_20261107_100000.jpg') | Out-Null
+    # bruta: casa pelo nome, casa pelo LastWriteTime, e nao casa (outro dia)
+    New-Item -ItemType File -Path (Join-Path $bruta 'IMG_20261106_170000.jpg') | Out-Null
+    $semPadrao = New-Item -ItemType File -Path (Join-Path $bruta 'SEM_PADRAO.jpg')
+    $semPadrao.LastWriteTime = [datetime]'2026-11-06 18:00:00'
+    $outroDia = New-Item -ItemType File -Path (Join-Path $bruta 'IMG_20261105_090000.jpg')
+    $outroDia.LastWriteTime = [datetime]'2026-11-05 09:00:00'
+    # dedup: mesma visita no "E:" nao pode duplicar fotos
+    $visDirE = Join-Path $orgE '2026\11\06_visita_1'
+    New-Item -ItemType Directory -Path $visDirE -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $visDir '_visita.json') -Destination $visDirE
+    New-Item -ItemType File -Path (Join-Path $visDirE 'IMG_20261106_144600.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $visDirE 'foto_sem_padrao.jpg') | Out-Null
+    $fc = Get-FotosCirurgico -Raizes @($orgC, $orgE, $bruta) -DatasAlvo @('2026-11-06') -Extensoes $ExtensoesFoto
+    if ($fc.Count -ne 5) { throw "triagem: busca cirurgica esperava 5 fotos, obtidas $($fc.Count)" }
+    $daVisita = @($fc | Where-Object { $_.LoteVisita })
+    if ($daVisita.Count -ne 2) { throw 'triagem: fotos da visita deveriam vir pre-agrupadas (LoteVisita)' }
+    $semPadraoJson = $daVisita | Where-Object { $_.Arquivo.Name -eq 'foto_sem_padrao.jpg' }
+    if ($semPadraoJson.HoraStr -ne '15:30:00' -or -not $semPadraoJson.TemGps) { throw 'triagem: hora/GPS deveriam vir do _visita.json (zero EXIF)' }
+    if ($semPadraoJson.Lat -ne -23.501) { throw 'triagem: lat do _visita.json falhou' }
+    if (@($fc | Where-Object { $_.DataStr -ne '2026-11-06' }).Count -ne 0) { throw 'triagem: fotos de outro dia nao podem entrar' }
+    if (@($fc | Where-Object { $_.Arquivo.Name -eq 'SEM_PADRAO.jpg' }).Count -ne 1) { throw 'triagem: fallback LastWriteTime do dia falhou' }
+    if (@($fc | Where-Object { $_.Arquivo.Name -eq 'IMG_20261106_144600.jpg' }).Count -ne 1) { throw 'triagem: dedup por nome entre raizes falhou' }
+
+    # 1n) triagem: horario sem -null e atalho S
+    if ((Format-HorarioVisita '14:46' 'null') -ne '14:46') { throw 'triagem: hora_fim "null" vazou na exibicao' }
+    if ((Format-HorarioVisita '14:46' '15:30') -ne '14:46-15:30') { throw 'triagem: intervalo completo falhou' }
+    if ((Format-HorarioVisita $null $null) -ne '') { throw 'triagem: ambos vazios deveria ser vazio' }
+    if ((Format-HorarioVisita 'null' '15:30') -ne '15:30') { throw 'triagem: hora_inicio "null" falhou' }
+    if ((Resolve-TagSugestao -Escolha 'S' -Sugestao 'B') -ne 'B') { throw 'triagem: atalho S nao aceitou a sugestao' }
+    if ((Resolve-TagSugestao -Escolha '' -Sugestao 'B') -ne 'B') { throw 'triagem: Enter nao aceitou a sugestao' }
+    if ((Resolve-TagSugestao -Escolha 'A' -Sugestao 'B') -ne 'A') { throw 'triagem: tag explicita nao preservada' }
+    if ((Resolve-TagSugestao -Escolha 'S' -Sugestao $null) -ne 'S') { throw 'triagem: S sem sugestao deveria seguir como tag' }
+
+    # 1o) camera: indice central _indice_visitas.json (zero EXIF, nada movido)
+    $visDir2 = Join-Path $orgC '2026\11\07_visita'
+    New-Item -ItemType Directory -Path $visDir2 -Force | Out-Null
+    ([PSCustomObject]@{ data = '2026-11-07'; hora_inicio = '09:00:00'; hora_fim = '10:00:00'; qtd_fotos = 3; lat_media = -24.0; lon_media = -48.0; raio_metros = 5.0; arquivos = @() }) |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $visDir2 '_visita.json') -Encoding UTF8
+    $idxPath = New-IndiceVisitas -Raiz $orgC
+    if (-not (Test-Path -LiteralPath $idxPath)) { throw 'camera: _indice_visitas.json nao gerado' }
+    $idxObj = Get-Content -LiteralPath $idxPath -Raw | ConvertFrom-Json
+    $e06 = @($idxObj.'2026-11-06')
+    if ($e06.Count -ne 1 -or $e06[0].pasta_relativa -ne '2026\11\06_visita_1') { throw 'camera: indice pasta_relativa falhou' }
+    if ($e06[0].qtd_fotos -ne 2 -or $e06[0].hora_inicio -ne '14:46:00' -or $e06[0].visita_json -ne '2026\11\06_visita_1\_visita.json') { throw 'camera: indice campos falhou' }
+    if (@($idxObj.'2026-11-07').Count -ne 1) { throw 'camera: indice segunda data falhou' }
+    if (-not (Test-Path -LiteralPath (Join-Path $visDir 'IMG_20261106_144600.jpg'))) { throw 'camera: indice nao pode mover/alterar fotos' }
+
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
     if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
     if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }
