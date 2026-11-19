@@ -359,6 +359,31 @@ try {
     $resumo = Get-ResumoProcessadosAno -Ano '2026'
     if ($resumo.triadas -ne 2 -or $resumo.sincronizadas -ne 2 -or $resumo.pendentes -ne 0) { throw 'triagem: resumo do ano incorreto' }
 
+    # 1r) modo de fotos no _processados.json: campos iniciais + Update-FotosProcessados (manual/automatico/pulado)
+    $regF0 = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    foreach ($r in $regF0) {
+        if ($r.fotos_modo -ne 'pulado' -or $r.fotos_copiadas -ne 0 -or $null -ne $r.fotos_origem_sugerida) { throw 'triagem: fotos_modo/fotos_copiadas/fotos_origem_sugerida iniciais incorretos' }
+    }
+    $inbox1[0].tag = 'A'; $inbox2[0].tag = 'B'
+    $diaFotos = [PSCustomObject]@{ data = '2026-11-18'; visitas = @($inbox1[0], $inbox2[0]) }
+    $statusFotos = @{
+        'A' = [PSCustomObject]@{ Modo = 'manual'; Copiadas = 0; Origem = 'C:\origem\lote_vizinhos' }
+        'B' = [PSCustomObject]@{ Modo = 'automatico'; Copiadas = 5; Origem = 'C:\origem\visita_b' }
+    }
+    Update-FotosProcessados -Dia $diaFotos -Status $statusFotos
+    $regF1 = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    $jf = $regF1 | Where-Object { $_.pasta_inbox -eq $leaf1 }
+    $mf = $regF1 | Where-Object { $_.pasta_inbox -eq $leaf2 }
+    if ($jf.fotos_modo -ne 'manual' -or $jf.fotos_origem_sugerida -ne 'C:\origem\lote_vizinhos') { throw 'triagem: modo manual nao registrado' }
+    if ($mf.fotos_modo -ne 'automatico' -or $mf.fotos_copiadas -ne 5) { throw 'triagem: modo automatico/contagem nao registrado' }
+    if ($jf.sincronizada -ne $true -or $jf.drive_url -ne 'https://drive.google.com/drive/folders/IDJOAO123') { throw 'triagem: Update-FotosProcessados sobrescreveu campos de sync' }
+    if ($regF1.Count -ne 2 -or (Test-Path -LiteralPath "$regPath.tmp")) { throw 'triagem: append atomico de fotos falhou' }
+    # visita sem status -> pulado (0 fotos); segunda chamada nao duplica
+    Update-FotosProcessados -Dia $diaFotos -Status @{}
+    $regF2 = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if (($regF2 | Where-Object { $_.pasta_inbox -eq $leaf1 }).fotos_modo -ne 'pulado') { throw 'triagem: visita sem status deveria ficar pulado' }
+    if ($regF2.Count -ne 2) { throw 'triagem: segunda chamada duplicou registros' }
+
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
     if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
     if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }

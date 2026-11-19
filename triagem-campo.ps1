@@ -699,6 +699,9 @@ function Add-ProcessadoRegistro {
         produtor_pasta   = $Visita.produtor_pasta
         destino_onedrive = $Destino
         arquivos_levados = @($Arquivos)
+        fotos_modo       = 'pulado'    # atualizado na Etapa 2: automatico | individual | manual | pulado
+        fotos_copiadas   = 0
+        fotos_origem_sugerida = $null
         sincronizada     = $false      # start-sync.ps1 marca true apos sync real (chave: destino_onedrive)
         sincronizada_em  = $null
         drive_url        = $null
@@ -719,6 +722,40 @@ function Get-ResumoProcessadosAno {
     $nSync = @($regs | Where-Object { Get-PropValue $_ 'sincronizada' }).Count
     return [PSCustomObject]@{
         ano = $Ano; triadas = $regs.Count; sincronizadas = $nSync; pendentes = ($regs.Count - $nSync)
+    }
+}
+
+# Grava o resultado da triagem de fotos (Etapa 2) nos registros do dia, por destino_onedrive.
+# $Status: hashtable tag -> { Modo, Copiadas, Origem }; visita sem status = 'pulado' (0 fotos).
+# Append atomico (.tmp + Move-Item -Force); preserva todos os demais campos/registros.
+function Update-FotosProcessados {
+    param($Dia, $Status)
+    if (-not $Dia.visitas -or @($Dia.visitas).Count -eq 0) { return }
+    if ($Dia.data -notmatch '^(\d{4})') { return }
+    $regPath = Join-Path $InboxBase "$($Matches[1])\_inbox_relatorio_ater\_processados.json"
+    if (-not (Test-Path -LiteralPath $regPath)) { return }
+    try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return }
+    $mudou = $false
+    foreach ($v in $Dia.visitas) {
+        if (-not $v.CaminhoDestino) { continue }
+        $st = $Status[$v.tag]
+        $modo = if ($st) { $st.Modo } else { 'pulado' }
+        $n    = if ($st) { [int]$st.Copiadas } else { 0 }
+        $orig = if ($st) { $st.Origem } else { $null }
+        foreach ($r in $regs) {
+            $pd = $r.PSObject.Properties['destino_onedrive']
+            if (-not $pd -or -not $pd.Value) { continue }
+            if (([string]$pd.Value).TrimEnd('\') -ne ([string]$v.CaminhoDestino).TrimEnd('\')) { continue }
+            Add-Member -InputObject $r -NotePropertyName fotos_modo -NotePropertyValue $modo -Force
+            Add-Member -InputObject $r -NotePropertyName fotos_copiadas -NotePropertyValue $n -Force
+            Add-Member -InputObject $r -NotePropertyName fotos_origem_sugerida -NotePropertyValue $orig -Force
+            $mudou = $true
+        }
+    }
+    if ($mudou) {
+        $tmp = "$regPath.tmp"
+        ConvertTo-Json -InputObject @($regs) -Depth 10 | Set-Content -LiteralPath $tmp -Encoding UTF8
+        Move-Item -LiteralPath $tmp -Destination $regPath -Force
     }
 }
 
@@ -909,6 +946,20 @@ Write-Host " [OK] $($TodasFotos.Count) foto(s) do(s) dia(s) alvo ($QtdVisita via
 $Sair = $false
 foreach ($Dia in $RelatorioDias) {
     if ($Sair) { break }
+    # Rastreio de fotos por produtor do dia (tag -> Modo/Copiadas/Origem), gravado no _processados.json ao fim do dia
+    $StatusFotos = @{}
+    $marcar = {
+        param($tag, $modo, $n, $origem)
+        $atual = $StatusFotos[$tag]
+        if (-not $atual) {
+            $StatusFotos[$tag] = [PSCustomObject]@{ Modo = $modo; Copiadas = [int]$n; Origem = $origem }
+            return
+        }
+        $atual.Copiadas += [int]$n
+        if ($modo -eq 'manual') { $atual.Modo = 'manual'; if ($origem) { $atual.Origem = $origem } }
+        elseif ($modo -ne 'pulado' -and $atual.Modo -ne 'manual') { $atual.Modo = $modo }
+        if ($origem -and -not $atual.Origem) { $atual.Origem = $origem }
+    }
     # Filtra pelo campo "data" (AAAA-MM-DD) do dia — nao pelo prefixo da pasta.
     $FotosDoDia = @($TodasFotos | Where-Object { $_.DataStr -eq $Dia.data })
 
@@ -925,7 +976,7 @@ foreach ($Dia in $RelatorioDias) {
         $extra = if ($per) { " ($per)" } else { "" }
         Write-Host "   [$($v.tag)]$extra $($v.cidade) | $($v.atividade) | $($v.produtor_pasta)" -ForegroundColor Green
     }
-    Write-Host "   [Enter/S] Aceitar sugestao | [A/B/C] TAG | [P] Pular | [I] Foto a foto | [Q] Sair" -ForegroundColor Gray
+    Write-Host "   [Enter/S] Aceitar sugestao | [A/B/C] TAG | [P] Pular | [I] Foto a foto | [M] Manual (vizinhos) | [Q] Sair" -ForegroundColor Gray
     Write-Host "------------------------------------------------------------------------" -ForegroundColor Cyan
 
     # 1) Lotes pre-agrupados por visita (tempo+GPS do organizar-camera) — preserva a separacao original
@@ -959,10 +1010,25 @@ foreach ($Dia in $RelatorioDias) {
             Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER ou S para aceitar" -ForegroundColor Yellow
         }
 
-        $Escolha = Resolve-TagSugestao -Escolha ((Read-Host " TAG (A/B/C), Enter/S aceita sugestao, P pula, I individual, Q sair").Trim().ToUpper()) -Sugestao $Sugestao
+        $Escolha = Resolve-TagSugestao -Escolha ((Read-Host " TAG (A/B/C), Enter/S aceita sugestao, P pula, I individual, M manual, Q sair").Trim().ToUpper()) -Sugestao $Sugestao
 
         if ($Escolha -eq 'Q') { Write-Host "   -> Triagem encerrada." -ForegroundColor Yellow; Write-TriagemLog "ENCERRADO no lote #$NumLote de $($Dia.data)"; $Sair = $true; break }
         if ($Escolha -eq 'P' -or [string]::IsNullOrWhiteSpace($Escolha)) { Write-Host "   -> Lote pulado." -ForegroundColor DarkGray; continue }
+
+        if ($Escolha -eq 'M') {
+            # Manual: fotos de produtores vizinhos misturadas — abre origem + destinos no Explorer p/ copiar a mao
+            $origemManual = Split-Path $Lote[0].Arquivo.FullName -Parent
+            try { Invoke-Item -LiteralPath $origemManual } catch { }
+            foreach ($v in $Dia.visitas) {
+                if ($v.CaminhoDestino -and (Test-Path -LiteralPath $v.CaminhoDestino)) {
+                    try { Invoke-Item -LiteralPath $v.CaminhoDestino } catch { }
+                }
+                & $marcar $v.tag 'manual' 0 $origemManual
+            }
+            Write-TriagemLog "MANUAL lote #$NumLote de $($Dia.data): origem $origemManual"
+            Write-Host "   -> Modo MANUAL: pastas abertas no Explorer. Copie as fotos manualmente; registro marcado como 'manual'." -ForegroundColor Yellow
+            continue
+        }
 
         if ($Escolha -eq 'I') {
             $PorTag = @{}
@@ -977,6 +1043,7 @@ foreach ($Dia in $RelatorioDias) {
                         $PorTag[$TagFoto].Add($FotoItem)
                         $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaAlvo.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaAlvo.produtor_pasta })
                         Write-TriagemLog "COPIADA: $($FotoItem.Arquivo.Name) -> $($VisitaAlvo.produtor_pasta)"
+                        & $marcar $TagFoto 'individual' 1 (Split-Path $FotoItem.Arquivo.FullName -Parent)
                     } catch { Write-Host "     [ERRO] $($_.Exception.Message)" -ForegroundColor Red }
                 }
             }
@@ -991,9 +1058,11 @@ foreach ($Dia in $RelatorioDias) {
 
         $VisitaEscolhida = $Dia.visitas | Where-Object { $_.tag -eq $Escolha -and $_.CaminhoDestino } | Select-Object -First 1
         if ($VisitaEscolhida) {
+            $copiadasLote = 0
             foreach ($FotoItem in $Lote) {
                 try {
                     Copy-Item -LiteralPath $FotoItem.Arquivo.FullName -Destination $VisitaEscolhida.CaminhoDestino -Force -ErrorAction Stop
+                    $copiadasLote++
                     $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaEscolhida.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaEscolhida.produtor_pasta })
                     Write-TriagemLog "COPIADA: $($FotoItem.Arquivo.Name) -> $($VisitaEscolhida.produtor_pasta)"
                 } catch { Write-Host "   [!] Falha ao copiar $($FotoItem.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
@@ -1001,10 +1070,13 @@ foreach ($Dia in $RelatorioDias) {
             $gps = Export-CoordenadasTxt -FotosLote $Lote -PastaDestino $VisitaEscolhida.CaminhoDestino -NomeProdutor $VisitaEscolhida.produtor_pasta
             $RunGps.Add([PSCustomObject]@{ produtor = $VisitaEscolhida.produtor_pasta; count = $gps.Count; lat = $gps.MediaLat; lon = $gps.MediaLon; txt = $gps.TxtPath })
             Write-Host "   [OK] $($Lote.Count) foto(s) + GPS ($($gps.Count)) em: $($VisitaEscolhida.produtor_pasta)" -ForegroundColor Green
+            & $marcar $Escolha 'automatico' $copiadasLote (Split-Path $Lote[0].Arquivo.FullName -Parent)
         } else {
             Write-Host "   [!] Tag '$Escolha' invalida. Lote pulado." -ForegroundColor Red
         }
     }
+    # Grava o resultado da triagem de fotos do dia no _processados.json (atomico; demais campos intactos)
+    Update-FotosProcessados -Dia $Dia -Status $StatusFotos
 }
 
 # ================= MANIFESTO FINAL =================

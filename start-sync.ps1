@@ -259,12 +259,19 @@ function Show-ProcessadosStatus {
     Write-Host "`n PENDENTES DE SINCRONIZACAO ($($pend.Count)):" -ForegroundColor Yellow
     if ($pend.Count -eq 0) { Write-Host "   (nenhuma)" -ForegroundColor DarkGray }
     foreach ($r in $pend) {
-        Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | triada em $($r.processado_em)" -ForegroundColor White
+        $pm = $r.PSObject.Properties['fotos_modo']
+        $modo = if ($pm -and $pm.Value) { $pm.Value } else { '-' }
+        $cor = if ($modo -eq 'manual') { 'Yellow' } else { 'White' }
+        $aviso = if ($modo -eq 'manual') { '  <-- fotos copiadas MANUALMENTE, conferir antes de enviar' } else { '' }
+        Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | fotos: $modo | triada em $($r.processado_em)$aviso" -ForegroundColor $cor
     }
     Write-Host "`n SINCRONIZADAS ($($sync.Count)):" -ForegroundColor Green
     if ($sync.Count -eq 0) { Write-Host "   (nenhuma)" -ForegroundColor DarkGray }
     foreach ($r in $sync) {
-        Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | enviada em $($r.sincronizada_em)" -ForegroundColor White
+        $pm = $r.PSObject.Properties['fotos_modo']
+        $modo = if ($pm -and $pm.Value) { $pm.Value } else { '-' }
+        $cor = if ($modo -eq 'manual') { 'Yellow' } else { 'White' }
+        Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | fotos: $modo | enviada em $($r.sincronizada_em)" -ForegroundColor $cor
         if ($r.drive_url) { Write-Host "      $($r.drive_url)" -ForegroundColor DarkCyan }
     }
 }

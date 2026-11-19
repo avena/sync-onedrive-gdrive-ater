@@ -41,7 +41,8 @@ Cruza os relatórios da inbox (`G:`) com as fotos do dia, cria as pastas no OneD
 ```
 
 * **Tela 1 (Relatórios):** Confira as visitas (`E` edita, `D` remove) → aperte **`C` / `Enter`** e confirme **`S`**.
-* **Tela 2 (Fotos):** O script sugere o produtor pelo horário da visita → aperte **`Enter` ou `S`** para aceitar (ou digite a letra do produtor / `P` para pular).
+* **Tela 2 (Fotos):** O script sugere o produtor pelo horário da visita → aperte **`Enter` ou `S`** para aceitar (ou digite a letra do produtor / `P` para pular / `I` foto a foto).
+* **Lote com fotos de vizinhos misturadas?** Aperte **`M`** (Manual): o Explorer abre a pasta de origem das fotos e as pastas dos produtores do dia no OneDrive para você copiar à mão; o registro fica marcado `fotos_modo: manual` (destacado na opção `13` do `start-sync`).
 * Cada visita confirmada é registrada em `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com **`sincronizada: false`** (os originais da inbox ficam intactos). No início, o script mostra o resumo do ano: `X triadas | Y sincronizadas | Z pendentes de envio`.
 
 ### Passo 3 — Enviar para o Google Drive da Consultoria (`start-sync.ps1`)
@@ -54,7 +55,7 @@ Copia as pastas prontas do OneDrive para o Drive compartilhado da SA Consultoria
 
 * Digite **`2`** (**Sincronizar AGORA**) para enviar todas as cidades, ou **`4`** para escolher produtores específicos.
 * Ao final de cada sync real, as visitas correspondentes são marcadas **`sincronizada: true`** (com data/hora e link do Drive) no `_processados.json` — o Dry-Run nunca marca.
-* Digite **`13`** (**Status de visitas**) para ver o que está **pendente de envio** e o que já foi **sincronizado**.
+* Digite **`13`** (**Status de visitas**) para ver o que está **pendente de envio** e o que já foi **sincronizado**, incluindo o modo das fotos (`automatico`/`individual`/`manual`/`pulado`) — as **manuais** aparecem em amarelo para conferência.
 * *(Se o agendamento de 5 min estiver **ATIVO**, este passo roda sozinho).*
 
 ---

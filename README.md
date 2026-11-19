@@ -261,7 +261,7 @@ Antes de tocar no disco, o script abre uma lista navegável com `[Console]::Read
 - cria `Cidade\Atividade\AAAA-MM-DD-PRODUTOR - RESUMO` no `$OneDriveBase`;
 - grava o **`.txt` limpo** (remove o bloco YAML `---…---` do topo, pronto para colar no Word) e copia o **`.json`** irmão para a pasta do produtor (ambos ficam locais/OneDrive);
 - **anexos automáticos só na `ATIVIDADE INDIVIDUAL 1`** (case-insensitive): imagens `.png`/`.jpg`/`.jpeg` da pasta da visita cujo nome contenha `mapa` ou `calendario` (regex `mapa|c?alend[aá]rio`, tolera `alendario-agricola.png`) são **copiadas** junto — ex.: `... - Mapa.png`, `... - Mapa.jpeg`, `calendario-agricola.png`. Da ATV 2 em diante, não busca anexos;
-- **cópia não-destrutiva**: nada é movido/apagado da inbox (`.txt`, `.json`, `.gdoc`, imagens ficam intactos no `G:`); em vez da antiga árvore `_processados\`, cada visita processada ganha um registro **append** no arquivo único `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com `processado_em`, `pasta_inbox`, `data`, `cidade`, `atividade`, `produtor_pasta`, `destino_onedrive`, `arquivos_levados` e o rastreio de envio **`sincronizada: false`, `sincronizada_em: null`, `drive_url: null`**. Gravação **atômica** (`.tmp` + `Move-Item -Force`), preservando todos os registros/campos existentes. O `Get-InboxVisitas` consulta esse registro e pula as pastas já processadas (idempotência). No início da triagem, um resumo do ano atual é exibido: `Historico 2026: X visita(s) triadas | Y sincronizada(s) | Z pendente(s) de envio`.
+- **cópia não-destrutiva**: nada é movido/apagado da inbox (`.txt`, `.json`, `.gdoc`, imagens ficam intactos no `G:`); em vez da antiga árvore `_processados\`, cada visita processada ganha um registro **append** no arquivo único `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com `processado_em`, `pasta_inbox`, `data`, `cidade`, `atividade`, `produtor_pasta`, `destino_onedrive`, `arquivos_levados`, o rastreio de fotos **`fotos_modo` (`automatico`/`individual`/`manual`/`pulado`), `fotos_copiadas`, `fotos_origem_sugerida`** (atualizados ao fim da Etapa 2) e o rastreio de envio **`sincronizada: false`, `sincronizada_em: null`, `drive_url: null`**. Gravação **atômica** (`.tmp` + `Move-Item -Force`), preservando todos os registros/campos existentes. O `Get-InboxVisitas` consulta esse registro e pula as pastas já processadas (idempotência). No início da triagem, um resumo do ano atual é exibido: `Historico 2026: X visita(s) triadas | Y sincronizada(s) | Z pendente(s) de envio`.
 
 ### Ciclo de vida `sincronizada` (triagem ↔ start-sync)
 
@@ -269,7 +269,7 @@ O `_processados.json` é o registro compartilhado do ciclo completo da visita:
 
 1. **`triagem-campo.ps1`** registra a visita com **`sincronizada: false`** (chave de ligação: `destino_onedrive`, o caminho completo da pasta no OneDrive).
 2. **`start-sync.ps1`** (`Update-ProcessadosSyncStatus`), ao final de **toda sincronização real** (`[2]`, `[3]`, `[4]` ou `-Auto` — **nunca** em Dry-Run), marca **`sincronizada: true`**, `sincronizada_em` (timestamp) e `drive_url` (URL da pasta no Drive, quando obtida via `rclone lsjson`) para cada pasta com `Codigo -eq 0` — **mesmo com 0 cópias** (os arquivos podem já ter sido enviados antes). O match com `destino_onedrive` é case-insensitive e ignora barra final; todos os demais campos/registros ficam intactos (gravação atômica `.tmp` + `Move-Item -Force`). Se o `G:` estiver offline, a atualização falha em silêncio sem derrubar o sync.
-3. **Opção `[13]`** do menu lista as visitas **Pendentes de sincronização** vs. **Sincronizadas** (data, cidade, produtor, timestamp de envio e link do Drive).
+3. **Opção `[13]`** do menu lista as visitas **Pendentes de sincronização** vs. **Sincronizadas** (data, cidade, produtor, `fotos_modo`, timestamp de envio e link do Drive). Visitas com **`fotos_modo: manual`** aparecem destacadas em amarelo com o aviso *"fotos copiadas MANUALMENTE, conferir antes de enviar"* — útil quando o lote tinha fotos de produtores vizinhos misturadas.
 
 ### Etapa 2 — Triagem inteligente de fotos + GPS
 
@@ -279,7 +279,9 @@ Depois de criar as pastas, o script extrai as **datas únicas** do relatório (`
 - **Bruta (`Camera\`)**: pré-filtro pelo padrão `*AAAAMMDD*` no nome **ou** `LastWriteTime` do dia antes de chamar `Get-FotoMetadados` (fotos de outros dias nunca são abertas).
 - Fotos sem visita (avulsas/brutas) agrupam por bloco de horário (intervalo de 40 min).
 
-O script **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter` ou `S`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `Q` sair). Horários incompletos nunca exibem `-null` (ex.: `14:46` em vez de `14:46-null`). Para cada lote copiado, gera `coordenadas_gps.txt` com o GPS (das visitas, vindo do `_visita.json`).
+O script **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `periodo` (`manha` 06:00–12:00 / `tarde` 12:01–18:30). Havendo correspondência única, destaca a **pré-sugestão** e basta apertar **`Enter` ou `S`** para aceitar (ou digitar outra TAG / `P` pular / `I` foto a foto / `M` manual / `Q` sair). Horários incompletos nunca exibem `-null` (ex.: `14:46` em vez de `14:46-null`). Para cada lote copiado, gera `coordenadas_gps.txt` com o GPS (das visitas, vindo do `_visita.json`).
+
+**`[M] Manual` (produtores vizinhos misturados no lote):** abre no Explorer (`Invoke-Item`) a **pasta de origem** das fotos do lote **e** as pastas de destino dos produtores daquele dia no OneDrive, para você copiar as fotos manualmente. Os registros do dia no `_processados.json` são marcados com **`fotos_modo: "manual"`** e `fotos_origem_sugerida` (caminho da pasta de origem). Ao final de cada dia, o resultado da triagem é gravado por produtor: `fotos_modo` (`automatico` = lote inteiro numa TAG, `individual` = foto a foto, `manual`, `pulado` = nada copiado), `fotos_copiadas` (contagem real de cópias com sucesso) e `fotos_origem_sugerida`.
 
 ### Auditoria permanente (`runs\`)
 
@@ -371,7 +373,7 @@ O arquivo guarda **só o caminho relativo completo** até a pasta do produtor:
 | `[10]` | **Agendar tarefa** — Registra/atualiza a tarefa do Agendador (5 min, `-Auto`) |
 | `[11]` | **Remover agendamento** — Desregistra a tarefa do Agendador |
 | `[12]` | **Atualizar rclone** — `scoop update rclone` (ou `winget upgrade`) |
-| `[13]` | **Status de visitas (`_processados.json`)** — lista as visitas triadas separadas entre **Pendentes de sincronização** (`sincronizada: false`) e **Sincronizadas** (`sincronizada: true`), com data, cidade, produtor, timestamp de envio e URL do Drive |
+| `[13]` | **Status de visitas (`_processados.json`)** — lista as visitas triadas separadas entre **Pendentes de sincronização** (`sincronizada: false`) e **Sincronizadas** (`sincronizada: true`), com data, cidade, produtor, `fotos_modo` (destaque amarelo quando `manual`), timestamp de envio e URL do Drive |
 | `[0]` | Sair |
 
 > O cabeçalho do menu mostra se o agendamento está **ATIVO (5 min)** ou desativado.
@@ -494,7 +496,7 @@ Contexto técnico obrigatório:
 - Autenticação: Remote OAuth chamado "gdrive_saconsult" autenticado na conta "fernandoavena.saconsult@gmail.com". A pasta destino fica em "Compartilhados comigo" (NÃO é Team Drive/Shared Drive), exigindo a flag `--drive-shared-with-me`.
 - Regra de ouro: Usar exclusivamente `rclone copy --update` (NUNCA `rclone sync`), pois arquivos adicionados por outros técnicos no Google Drive jamais podem ser apagados.
 - O script deve manter o menu interativo (opções 0 a 13, incluindo [13] Status de visitas do _processados.json), suporte ao parâmetro `-Auto` para o Agendador de Tarefas do Windows (`-MultipleInstances IgnoreNew`), retry para rede instável (`--retries=3`) e limpeza automática de logs com mais de 7 dias.
-- Ciclo de vida compartilhado: triagem-campo.ps1 registra visitas em G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json com sincronizada=false (append atômico .tmp+Move-Item, inbox intacta); start-sync.ps1 (Update-ProcessadosSyncStatus) marca sincronizada=true/sincronizada_em/drive_url após sync real (Codigo 0, nunca dry-run), casando destino_onedrive case-insensitive sem barra final e preservando os demais campos.
+- Ciclo de vida compartilhado: triagem-campo.ps1 registra visitas em G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json com sincronizada=false (append atômico .tmp+Move-Item, inbox intacta) e campos fotos_modo (automatico/individual/manual/pulado), fotos_copiadas, fotos_origem_sugerida atualizados ao fim da Etapa 2 (Update-FotosProcessados); a tecla M na Etapa 2 abre origem+destinos no Explorer e marca fotos_modo=manual (lotes com produtores vizinhos misturados). start-sync.ps1 (Update-ProcessadosSyncStatus) marca sincronizada=true/sincronizada_em/drive_url após sync real (Codigo 0, nunca dry-run), casando destino_onedrive case-insensitive sem barra final e preservando os demais campos; a opção [13] lista pendentes vs sincronizadas destacando fotos_modo=manual.
 ```
 
 ## 📝 Licença
