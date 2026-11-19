@@ -21,6 +21,7 @@ $LogDir      = Join-Path $PSScriptRoot 'logs'
 $RunsDir     = Join-Path $PSScriptRoot 'runs'   # manifestos de auditoria: NUNCA apagar
 $NomeTarefa  = "Sync_ATER_OneDrive_GDrive"
 $ScriptPath  = $PSCommandPath
+$InboxBase   = "G:\Meu Drive"   # inbox espelhada (Drive pessoal): _processados.json compartilhado com triagem-campo.ps1
 
 $Cidades = @(
     "Barra do Turvo",
@@ -194,6 +195,78 @@ function Write-SyncRun {
     }
     Set-Content -Path "$base.txt" -Value $linhas -Encoding UTF8
     Write-Host "[OK] Manifesto de URLs salvo em: $base.txt" -ForegroundColor Cyan
+}
+
+# ================= CICLO DE VIDA DAS VISITAS (_processados.json, compartilhado com triagem-campo) =================
+# Marca sincronizada=true nos registros cujo destino_onedrive bate com as pastas sincronizadas
+# com sucesso (Codigo 0, mesmo com 0 cópias). Falha silenciosa se G: offline; gravação atômica;
+# preserva TODOS os demais campos/registros. Retorna quantos registros foram marcados.
+function Update-ProcessadosSyncStatus {
+    param([array]$Sincronizadas)   # objetos com Local (caminho OneDrive), Cidade, Atividade, NomeDrive
+    if (-not $Sincronizadas -or @($Sincronizadas).Count -eq 0) { return 0 }
+    try {
+        if (-not (Test-Path -LiteralPath $InboxBase)) { return 0 }
+        $alvos = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($s in $Sincronizadas) { [void]$alvos.Add(([string]$s.Local).TrimEnd('\')) }
+        $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $total = 0
+        foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })) {
+            $regPath = Join-Path $ano.FullName '_inbox_relatorio_ater\_processados.json'
+            if (-not (Test-Path -LiteralPath $regPath)) { continue }
+            try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { continue }
+            $mudou = $false
+            foreach ($r in $regs) {
+                $pd = $r.PSObject.Properties['destino_onedrive']
+                if (-not $pd -or -not $pd.Value) { continue }
+                if (-not $alvos.Contains(([string]$pd.Value).TrimEnd('\'))) { continue }
+                Add-Member -InputObject $r -NotePropertyName sincronizada -NotePropertyValue $true -Force
+                Add-Member -InputObject $r -NotePropertyName sincronizada_em -NotePropertyValue $ts -Force
+                $pu = $r.PSObject.Properties['drive_url']
+                $url = if ($pu -and $pu.Value) { $pu.Value } else {
+                    try { Get-DriveFolderUrl -Atividade ([string]$r.atividade) -Cidade ([string]$r.cidade) -NomeDrive (Get-NomeResumo ([string]$r.produtor_pasta)) } catch { $null }
+                }
+                Add-Member -InputObject $r -NotePropertyName drive_url -NotePropertyValue $url -Force
+                $mudou = $true; $total++
+            }
+            if ($mudou) {
+                $tmp = "$regPath.tmp"
+                ConvertTo-Json -InputObject @($regs) -Depth 10 | Set-Content -LiteralPath $tmp -Encoding UTF8
+                Move-Item -LiteralPath $tmp -Destination $regPath -Force
+            }
+        }
+        return $total
+    } catch { return 0 }   # G: offline/erro inesperado: nunca derruba o sync
+}
+
+# Opção [13]: lista visitas triadas separadas entre pendentes e sincronizadas
+function Show-ProcessadosStatus {
+    Write-Host "`n=== STATUS DAS VISITAS TRIADAS (_processados.json) ===" -ForegroundColor Cyan
+    if (-not (Test-Path -LiteralPath $InboxBase)) {
+        Write-Host "[i] Inbox ausente/offline: $InboxBase" -ForegroundColor Yellow
+        return
+    }
+    $pend = [System.Collections.Generic.List[object]]::new()
+    $sync = [System.Collections.Generic.List[object]]::new()
+    foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' } | Sort-Object Name)) {
+        $regPath = Join-Path $ano.FullName '_inbox_relatorio_ater\_processados.json'
+        if (-not (Test-Path -LiteralPath $regPath)) { continue }
+        try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { continue }
+        foreach ($r in $regs) {
+            $ps = $r.PSObject.Properties['sincronizada']
+            if ($ps -and $ps.Value) { $sync.Add($r) } else { $pend.Add($r) }
+        }
+    }
+    Write-Host "`n PENDENTES DE SINCRONIZACAO ($($pend.Count)):" -ForegroundColor Yellow
+    if ($pend.Count -eq 0) { Write-Host "   (nenhuma)" -ForegroundColor DarkGray }
+    foreach ($r in $pend) {
+        Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | triada em $($r.processado_em)" -ForegroundColor White
+    }
+    Write-Host "`n SINCRONIZADAS ($($sync.Count)):" -ForegroundColor Green
+    if ($sync.Count -eq 0) { Write-Host "   (nenhuma)" -ForegroundColor DarkGray }
+    foreach ($r in $sync) {
+        Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | enviada em $($r.sincronizada_em)" -ForegroundColor White
+        if ($r.drive_url) { Write-Host "      $($r.drive_url)" -ForegroundColor DarkCyan }
+    }
 }
 
 # Lista de caminhos relativos ignorados: "Cidade\Atividade\NomePastaProdutor"
@@ -399,11 +472,15 @@ function Show-ProdutoresSelector {
                     $Pend = 0
                     $FalhasSel = 0
                     $ModSel = [System.Collections.Generic.List[object]]::new()
+                    $SyncOkSel = [System.Collections.Generic.List[object]]::new()
                     foreach ($Sel in $Alvos) {
                         Write-Host "-> $($Sel.Cidade) | $($Sel.Atividade) | $($Sel.Produtor)" -ForegroundColor Green
                         $R = Invoke-RcloneCopy -Local $Sel.Local -Nuvem $Sel.Nuvem -Simulacao $Simular -LogFile $LogSel
                         $Pend += $R.Pendentes
                         if ($R.Codigo -ne 0) { $FalhasSel++ }
+                        elseif (-not $Simular) {
+                            $SyncOkSel.Add([PSCustomObject]@{ Local = $Sel.Local; Cidade = $Sel.Cidade; Atividade = $Sel.Atividade; NomeDrive = $Sel.NomeDrive })
+                        }
                         if (-not $Simular -and ($R.Copiados + $R.Atualizados) -gt 0) {
                             $ModSel.Add([PSCustomObject]@{
                                 Produtor = $Sel.Produtor; Cidade = $Sel.Cidade; Atividade = $Sel.Atividade
@@ -420,6 +497,10 @@ function Show-ProdutoresSelector {
                         Write-Host "   -> $Resumo`n" -ForegroundColor DarkCyan
                     }
                     Write-SyncRun -Escopo 'SELETOR' -Modificados $ModSel -Simulacao $Simular
+                    if (-not $Simular) {
+                        $nMarcSel = Update-ProcessadosSyncStatus -Sincronizadas $SyncOkSel
+                        if ($nMarcSel -gt 0) { Write-Host "[OK] $nMarcSel visita(s) marcadas como sincronizadas em _processados.json" -ForegroundColor Cyan }
+                    }
 
                     if ($Simular) {
                         if ($Pend -eq 0 -and $FalhasSel -eq 0) {
@@ -557,6 +638,7 @@ function Invoke-AterSync {
     $Pendentes = 0
     $Erros     = 0
     $Modificados = [System.Collections.Generic.List[object]]::new()
+    $SyncOk = [System.Collections.Generic.List[object]]::new()   # pastas com Codigo 0 (p/ _processados.json)
 
     foreach ($T in $Tarefas) {
         $Indice++
@@ -567,6 +649,9 @@ function Invoke-AterSync {
         $Resultado = Invoke-RcloneCopy -Local $T.Local -Nuvem $T.Nuvem -Simulacao $Simulacao -LogFile $LogFile
         $Pendentes += $Resultado.Pendentes
         $Erros     += $Resultado.Erros
+        if (-not $Simulacao -and $Resultado.Codigo -eq 0) {
+            $SyncOk.Add([PSCustomObject]@{ Local = $T.Local; Cidade = $T.Cidade; Atividade = $T.Atividade; NomeDrive = $T.NomeDrive })
+        }
 
         # So pastas com arquivos efetivamente copiados/atualizados entram no manifesto de URLs
         if (-not $Simulacao -and ($Resultado.Copiados + $Resultado.Atualizados) -gt 0) {
@@ -606,6 +691,12 @@ function Invoke-AterSync {
     Write-Host "Log salvo em: $LogFile`n" -ForegroundColor Gray
 
     Write-SyncRun -Escopo $Escopo -Modificados $Modificados -Simulacao $Simulacao
+
+    # Ciclo de vida: marca sincronizada=true no _processados.json da triagem (nunca em dry-run)
+    if (-not $Simulacao) {
+        $nMarcadas = Update-ProcessadosSyncStatus -Sincronizadas $SyncOk
+        if ($nMarcadas -gt 0) { Write-Host "[OK] $nMarcadas visita(s) marcadas como sincronizadas em _processados.json" -ForegroundColor Cyan }
+    }
 
     return ($Falhas -eq 0)
 }
@@ -651,6 +742,7 @@ do {
     Write-Host "[10] Agendar tarefa (a cada 5 min)" -ForegroundColor Magenta
     Write-Host "[11] Remover agendamento" -ForegroundColor Magenta
     Write-Host "[12] Atualizar rclone" -ForegroundColor Magenta
+    Write-Host "[13] Status de visitas (_processados.json)" -ForegroundColor Magenta
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 
@@ -732,6 +824,10 @@ do {
         "12" {
             Update-RcloneBinario
             Read-Host "Pressione Enter para voltar ao menu"
+        }
+        "13" {
+            Show-ProcessadosStatus
+            Read-Host "`nPressione Enter para voltar ao menu"
         }
         "0" { Write-Host "Saindo..." -ForegroundColor Gray }
         default { Write-Host "Opção inválida." -ForegroundColor Red; Start-Sleep 1 }

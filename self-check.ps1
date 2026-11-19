@@ -328,6 +328,37 @@ try {
     $inbox3 = Get-InboxVisitas
     if (@($inbox3).Count -ne 0) { throw 'triagem: segunda leitura deveria pular todas as visitas registradas' }
 
+    # 1q) ciclo de vida sincronizada false->true (triagem registra, start-sync marca) + atomicidade + idempotencia
+    $regCiclo = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    foreach ($r in $regCiclo) {
+        if ($r.sincronizada -ne $false -or $null -ne $r.sincronizada_em -or $null -ne $r.drive_url) { throw 'triagem: registro novo deveria nascer sincronizada=false, sincronizada_em/drive_url nulos' }
+    }
+    # cache fake do Drive p/ Get-DriveFolderUrl resolver a URL sem rclone
+    $Script:DriveDirCache = @{ "$RemotoDrive/ATIVIDADE INDIVIDUAL 1/Jacupiranga" = @([PSCustomObject]@{ Name = 'JOAO - RESUMO'; ID = 'IDJOAO123' }) }
+    $procAntes = $regCiclo[0].processado_em
+    $nMarc = Update-ProcessadosSyncStatus -Sincronizadas @([PSCustomObject]@{ Local = $dest1; Cidade = 'Jacupiranga'; Atividade = 'ATIVIDADE INDIVIDUAL 1'; NomeDrive = 'JOAO - RESUMO' })
+    if ($nMarc -ne 1) { throw "start-sync: deveria marcar 1 visita, marcou $nMarc" }
+    $regApos = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if ($regApos.Count -ne 2) { throw 'start-sync: append/registros nao podem ser perdidos na atualizacao' }
+    $joao = $regApos | Where-Object { $_.pasta_inbox -eq $leaf1 }
+    $maria = $regApos | Where-Object { $_.pasta_inbox -eq $leaf2 }
+    if ($joao.sincronizada -ne $true -or $joao.sincronizada_em -notmatch '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$') { throw 'start-sync: sincronizada/sincronizada_em nao atualizados' }
+    if ($joao.drive_url -ne 'https://drive.google.com/drive/folders/IDJOAO123') { throw 'start-sync: drive_url nao preenchida' }
+    if ($joao.processado_em -ne $procAntes -or $joao.destino_onedrive -ne $dest1 -or $joao.arquivos_levados -notcontains 'calendario-agricola.png') { throw 'start-sync: campos existentes foram alterados/apagados' }
+    if ($maria.sincronizada -ne $false -or $null -ne $maria.drive_url) { throw 'start-sync: registro nao sincronizado foi alterado indevidamente' }
+    if (Test-Path -LiteralPath "$regPath.tmp") { throw 'start-sync: gravacao atomica deixou .tmp para tras' }
+    # idempotencia: segunda execucao nao duplica nem corrompe
+    $null = Update-ProcessadosSyncStatus -Sincronizadas @([PSCustomObject]@{ Local = $dest1; Cidade = 'Jacupiranga'; Atividade = 'ATIVIDADE INDIVIDUAL 1'; NomeDrive = 'JOAO - RESUMO' })
+    $regIdem = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if ($regIdem.Count -ne 2) { throw 'start-sync: segunda execucao duplicou registros' }
+    if (($regIdem | Where-Object { $_.pasta_inbox -eq $leaf1 }).drive_url -ne 'https://drive.google.com/drive/folders/IDJOAO123') { throw 'start-sync: idempotencia perdeu drive_url' }
+    # comparacao case-insensitive e sem barra final: marca MARIA com caminho "sujo"
+    $null = Update-ProcessadosSyncStatus -Sincronizadas @([PSCustomObject]@{ Local = ($dest2.ToLower() + '\'); Cidade = 'Jacupiranga'; Atividade = 'ATIVIDADE INDIVIDUAL 2'; NomeDrive = 'MARIA - RESUMO' })
+    $regFinal = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if (($regFinal | Where-Object { $_.pasta_inbox -eq $leaf2 }).sincronizada -ne $true) { throw 'start-sync: match case-insensitive/sem barra final falhou' }
+    $resumo = Get-ResumoProcessadosAno -Ano '2026'
+    if ($resumo.triadas -ne 2 -or $resumo.sincronizadas -ne 2 -or $resumo.pendentes -ne 0) { throw 'triagem: resumo do ano incorreto' }
+
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
     if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
     if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }

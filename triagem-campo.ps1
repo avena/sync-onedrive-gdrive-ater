@@ -699,9 +699,27 @@ function Add-ProcessadoRegistro {
         produtor_pasta   = $Visita.produtor_pasta
         destino_onedrive = $Destino
         arquivos_levados = @($Arquivos)
+        sincronizada     = $false      # start-sync.ps1 marca true apos sync real (chave: destino_onedrive)
+        sincronizada_em  = $null
+        drive_url        = $null
     }
-    ConvertTo-Json -InputObject $lista -Depth 6 | Set-Content -LiteralPath $regPath -Encoding UTF8
+    # Gravacao atomica: .tmp + Move-Item -Force (nunca deixa JSON pela metade); append preserva os demais registros/campos
+    $tmp = "$regPath.tmp"
+    ConvertTo-Json -InputObject $lista -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $regPath -Force
     return $regPath
+}
+
+# Resumo do historico do ano (usado no inicio da triagem; $null se ausente/ilegivel)
+function Get-ResumoProcessadosAno {
+    param([string]$Ano = (Get-Date -Format 'yyyy'))
+    $regPath = Join-Path $InboxBase "$Ano\_inbox_relatorio_ater\_processados.json"
+    if (-not (Test-Path -LiteralPath $regPath)) { return $null }
+    try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
+    $nSync = @($regs | Where-Object { Get-PropValue $_ 'sincronizada' }).Count
+    return [PSCustomObject]@{
+        ano = $Ano; triadas = $regs.Count; sincronizadas = $nSync; pendentes = ($regs.Count - $nSync)
+    }
 }
 
 # ================= CRIAR PASTAS + GRAVAR RELATORIOS (copia nao-destrutiva da inbox) =================
@@ -808,6 +826,12 @@ Clear-Host
 Write-Host "========================================================================" -ForegroundColor Cyan
 Write-Host "   TRIAGEM DE CAMPO - INBOX DRIVE / SYNCTHING -> ONEDRIVE (PASTAS+GPS)  " -ForegroundColor White
 Write-Host "========================================================================" -ForegroundColor Cyan
+
+# Resumo rapido do historico do ano atual (G: offline/ausente -> silencioso)
+$resumoProc = Get-ResumoProcessadosAno
+if ($resumoProc) {
+    Write-Host " Historico $($resumoProc.ano): $($resumoProc.triadas) visita(s) triadas | $($resumoProc.sincronizadas) sincronizada(s) | $($resumoProc.pendentes) pendente(s) de envio" -ForegroundColor DarkGray
+}
 
 $VisitasBrutas = $null
 try {
