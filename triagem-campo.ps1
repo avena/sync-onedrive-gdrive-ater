@@ -5,9 +5,9 @@
     Fonte primaria: inbox espelhada do Google Drive pessoal
     G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<Atividade>\<AAAA-MM-DD-NOME - RESUMO>\
     com pares .txt/.json (schema_version 1.0). Fallback: visitas.json manual ou colagem (FIM).
-    Etapa 1: revisao interativa (TUI) -> cria pastas no OneDrive, grava .txt limpo (sem YAML)
-    e copia o .json (originais da inbox INTACTOS). Na ATV 1 copia anexos Mapa/Calendario
-    Agricola (.png/.jpg/.jpeg). Registra append em _processados.json por ano (idempotente).
+    Etapa 1: revisao interativa (TUI) -> cria pastas no OneDrive e grava APENAS o .txt limpo
+    (sem YAML); o .json fica so na inbox (originais INTACTOS). Na ATV 1 copia anexos
+    Mapa/Calendario Agricola (.png/.jpg/.jpeg). Registra append em _processados.json por ano.
     Etapa 2: busca cirurgica pelas datas do relatorio (so <AAAA>\<MM> alvo; nome/hora/GPS
     lidos direto do _visita.json, zero EXIF nas visitas; avulsas/brutas pre-filtradas pelo
     nome *AAAAMMDD*). Visitas ja viram lotes pre-agrupados; avulsas agrupam por 40 min.
@@ -790,17 +790,14 @@ function Invoke-CriarPastasEArquivar {
             }
 
             # Copia NAO-DESTRUTIVA: originais da inbox ficam intactos no Drive.
-            # Grava .txt limpo (sem YAML) e copia o .json irmao (ambos ficam locais/OneDrive)
+            # No OneDrive vai APENAS o .txt limpo (sem YAML) + fotos/GPS + anexos ATV 1.
+            # O .json original permanece somente na inbox do Drive pessoal (nao e copiado).
             $levados = [System.Collections.Generic.List[string]]::new()
             $nomeBase = if ($V.SourceTxt) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceTxt) } else { "relatorio" }
             if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt)) {
                 $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -LiteralPath $V.SourceTxt -Raw -Encoding UTF8) }
                 Set-Content -LiteralPath (Join-Path $dest "$nomeBase.txt") -Value $body -Encoding UTF8
                 $levados.Add("$nomeBase.txt")
-            }
-            if ($V.SourceJson -and (Test-Path -LiteralPath $V.SourceJson)) {
-                Copy-Item -LiteralPath $V.SourceJson -Destination (Join-Path $dest ([System.IO.Path]::GetFileName($V.SourceJson))) -Force
-                $levados.Add([System.IO.Path]::GetFileName($V.SourceJson))
             }
 
             # Anexos automaticos so na ATV 1: Mapa / Calendario Agricola (imagens na pasta da inbox)

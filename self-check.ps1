@@ -293,10 +293,11 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $leaf1 $n))) { throw "triagem: original '$n' nao pode sair da inbox" }
     }
     if (Test-Path -LiteralPath (Join-Path $InboxBase '2026\_inbox_relatorio_ater\_processados')) { throw 'triagem: arvore legada _processados\ nao pode ser criada' }
-    # .txt limpo + .json + anexos mapa/calendario no OneDrive
+    # .txt limpo + anexos mapa/calendario no OneDrive; .json fica APENAS na inbox
     $txtDest = Get-Content -LiteralPath (Join-Path $dest1 'relatorio.txt') -Raw
     if ($txtDest -match '---' -or $txtDest.Trim() -ne 'Corpo do relatorio JOAO') { throw 'triagem: .txt destino deveria estar limpo (sem YAML)' }
-    if (-not (Test-Path -LiteralPath (Join-Path $dest1 'relatorio.json'))) { throw 'triagem: .json nao copiado ao OneDrive' }
+    if (Test-Path -LiteralPath (Join-Path $dest1 'relatorio.json')) { throw 'triagem: .json nao deve ser copiado ao OneDrive (fica so na inbox)' }
+    if (-not (Test-Path -LiteralPath (Join-Path $leaf1 'relatorio.json'))) { throw 'triagem: .json original deveria permanecer na inbox' }
     foreach ($n in @('2026-11-18-JOAO - Mapa.png', '2026-11-18-JOAO - Mapa.jpeg', 'calendario-agricola.png', 'alendario-agricola.png')) {
         if (-not (Test-Path -LiteralPath (Join-Path $dest1 $n))) { throw "triagem: anexo ATV1 '$n' nao copiado" }
     }
@@ -311,6 +312,7 @@ try {
     if ($reg1[0].pasta_inbox -ne $leaf1 -or $reg1[0].destino_onedrive -ne $dest1) { throw 'triagem: pasta_inbox/destino_onedrive incorretos' }
     if ($reg1[0].data -ne '2026-11-18' -or $reg1[0].processado_em -notmatch '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$') { throw 'triagem: data/processado_em incorretos' }
     if ($reg1[0].arquivos_levados -notcontains 'relatorio.txt' -or $reg1[0].arquivos_levados -notcontains 'calendario-agricola.png') { throw 'triagem: arquivos_levados incompleto' }
+    if ($reg1[0].arquivos_levados -contains 'relatorio.json') { throw 'triagem: arquivos_levados nao deve listar o .json (nao vai ao OneDrive)' }
     # idempotencia: visita registrada nao volta; ATV2 nova aparece e NAO leva anexos
     $leaf2 = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Jacupiranga\ATIVIDADE INDIVIDUAL 2\2026-11-18-MARIA - RESUMO'
     New-Item -ItemType Directory -Path $leaf2 -Force | Out-Null
