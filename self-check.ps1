@@ -1,5 +1,6 @@
 # Self-check: roda em pasta temporária, sem tocar no OneDrive real nem no ignorados.json
 $ErrorActionPreference = 'Stop'
+Write-Host '[SELF-CHECK] Ambiente temporario isolado — nenhuma pasta real ([GD], [OD], [GDSA] ou Syncthing) sera alterada.' -ForegroundColor Cyan
 $Script        = Join-Path $PSScriptRoot 'start-sync.ps1'
 $ScriptTriagem = Join-Path $PSScriptRoot 'triagem-campo.ps1'
 
@@ -47,8 +48,15 @@ foreach ($F in $AstA.FindAll({ $args[0] -is [System.Management.Automation.Langua
     . ([scriptblock]::Create($F.Extent.Text))
 }
 
+# Piloto ponta a ponta: valida sintaxe (6º script; não executa o fluxo real nem carrega funções p/ evitar colisões)
+$ScriptPiloto = Join-Path $PSScriptRoot 'piloto-ponta-a-ponta.ps1'
+$ErrosP = $null
+$AstP = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPiloto, [ref]$null, [ref]$ErrosP)
+if ($ErrosP.Count) { throw "Sintaxe piloto: $($ErrosP[0].Message)" }
+
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("ater_check_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
+$Passou = $false
 try {
     $OrigemBase    = Join-Path $Tmp 'Fernando'
     $Cidades       = @('Jacupiranga')
@@ -410,7 +418,8 @@ try {
     Save-Ignorados (@(Get-Ignorados) | Where-Object { $_ -ne $Alvo })
     if (@(Get-Ignorados).Count -ne 0) { throw 'remoção do ignorado falhou' }
 
-    Write-Host 'OK - self-check passed' -ForegroundColor Green
+    $Passou = $true
 } finally {
     Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
+    if ($Passou) { Write-Host '[SELF-CHECK] Ambiente temporario removido. OK - self-check passed.' -ForegroundColor Green }
 }

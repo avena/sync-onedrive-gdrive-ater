@@ -722,6 +722,7 @@ function Get-ResumoProcessadosAno {
     $nSync = @($regs | Where-Object { Get-PropValue $_ 'sincronizada' }).Count
     return [PSCustomObject]@{
         ano = $Ano; triadas = $regs.Count; sincronizadas = $nSync; pendentes = ($regs.Count - $nSync)
+        caminho = $regPath
     }
 }
 
@@ -777,8 +778,9 @@ function Invoke-CriarPastasEArquivar {
             if (-not (Test-Path -LiteralPath $dest)) {
                 try {
                     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-                    Write-Host "  [CRIADA]    $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)" -ForegroundColor Green
-                    Write-TriagemLog "CRIADA: $dest"
+                    Write-Host "  [CRIADA]    [OD] $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)" -ForegroundColor Green
+                    Write-Host "              Caminho [OD]: $dest" -ForegroundColor DarkGray
+                    Write-TriagemLog "CRIADA [OD]: $dest"
                     $PastasCriadas.Add($dest)
                 } catch {
                     Write-Host "  [ERRO] Falha ao criar $dest : $($_.Exception.Message)" -ForegroundColor Red
@@ -786,7 +788,8 @@ function Invoke-CriarPastasEArquivar {
                     continue
                 }
             } else {
-                Write-Host "  [JA EXISTE] $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)" -ForegroundColor DarkGray
+                Write-Host "  [JA EXISTE] [OD] $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)" -ForegroundColor DarkGray
+                Write-Host "              Caminho [OD]: $dest" -ForegroundColor DarkGray
             }
 
             # Copia NAO-DESTRUTIVA: originais da inbox ficam intactos no Drive.
@@ -808,7 +811,10 @@ function Invoke-CriarPastasEArquivar {
                     try {
                         Copy-Item -LiteralPath $a.FullName -Destination $dest -Force -ErrorAction Stop
                         $levados.Add($a.Name)
-                        Write-TriagemLog "ANEXO ATV1: $($a.Name) -> $($V.produtor_pasta)"
+                        Write-Host "  [ANEXO ATV1] $($a.Name)" -ForegroundColor Green
+                        Write-Host "              Origem [GD] : $($a.FullName)" -ForegroundColor DarkGray
+                        Write-Host "              Destino [OD]: $(Join-Path $dest $a.Name)" -ForegroundColor DarkGray
+                        Write-TriagemLog "ANEXO ATV1 [GD]: $($a.FullName) -> [OD]: $(Join-Path $dest $a.Name)"
                     } catch { Write-Host "  [!] Falha ao copiar anexo $($a.Name): $($_.Exception.Message)" -ForegroundColor Yellow }
                 }
             }
@@ -816,8 +822,10 @@ function Invoke-CriarPastasEArquivar {
             # Registro unico append em _processados.json (sem arvore _processados\; nada e movido/apagado)
             if ($V.OrigemInbox -and $V.PastaInbox) {
                 try {
-                    Add-ProcessadoRegistro -Visita $V -Destino $dest -Arquivos @($levados)
-                    Write-TriagemLog "REGISTRADO _processados.json: $($V.PastaInbox) -> $dest"
+                    $regPathGD = Add-ProcessadoRegistro -Visita $V -Destino $dest -Arquivos @($levados)
+                    Write-Host "  [REGISTRADO] $($V.produtor_pasta)" -ForegroundColor Cyan
+                    Write-Host "              Registro [GD]: $regPathGD" -ForegroundColor DarkGray
+                    Write-TriagemLog "REGISTRADO [GD]: $regPathGD | inbox: $($V.PastaInbox) -> [OD]: $dest"
                 } catch {
                     Write-Host "  [!] Falha ao registrar em _processados.json: $($_.Exception.Message)" -ForegroundColor Yellow
                     Write-TriagemLog "ERRO registrar: $($_.Exception.Message)"
@@ -839,17 +847,21 @@ function Write-TriagemRun {
     $linhas = [System.Collections.Generic.List[string]]::new()
     $linhas.Add("TRIAGEM DE CAMPO - $ts")
     $linhas.Add("Visitas: $($Registro.contagem.visitas) | Pastas criadas: $($Registro.contagem.pastas) | Fotos copiadas: $($Registro.contagem.fotos)")
+    $linhas.Add("Inbox [GD]        : $($Registro.inbox_gd)")
+    foreach ($rg in @($Registro.registros_gd)) { $linhas.Add("Registro [GD]     : $rg") }
+    $linhas.Add("Raizes [Syncthing]: $(@($Registro.raizes_syncthing) -join ' | ')")
+    $linhas.Add("Base [OD]         : $($Registro.base_od)")
     $linhas.Add("")
-    $linhas.Add("== PASTAS CRIADAS NO ONEDRIVE ==")
+    $linhas.Add("== PASTAS CRIADAS [OD] ==")
     foreach ($p in $Registro.pastas_criadas) { $linhas.Add("  $p") }
     $linhas.Add("")
-    $linhas.Add("== ORIGENS (inbox Drive) ==")
+    $linhas.Add("== ORIGENS [GD] (inbox Drive pessoal) ==")
     foreach ($o in $Registro.origens) { $linhas.Add("  [$($o.data)] $($o.produtor) | txt=$($o.txt) | json=$($o.json)") }
     $linhas.Add("")
-    $linhas.Add("== FOTOS COPIADAS (Syncthing -> OneDrive) ==")
+    $linhas.Add("== FOTOS COPIADAS ([Syncthing] -> [OD]) ==")
     foreach ($f in $Registro.fotos_copiadas) { $linhas.Add("  $($f.origem) -> $($f.destino)") }
     $linhas.Add("")
-    $linhas.Add("== GPS POR PRODUTOR ==")
+    $linhas.Add("== GPS POR PRODUTOR [OD] ==")
     foreach ($g in $Registro.gps) { $linhas.Add("  $($g.produtor): $($g.count) foto(s) com GPS | medio=$($g.lat),$($g.lon) | $($g.txt)") }
     Set-Content -Path "$base.txt" -Value $linhas -Encoding UTF8
     Write-Host "`n[OK] Manifesto de auditoria salvo em: $base.json" -ForegroundColor Cyan
@@ -865,6 +877,7 @@ Write-Host "====================================================================
 $resumoProc = Get-ResumoProcessadosAno
 if ($resumoProc) {
     Write-Host " Historico $($resumoProc.ano): $($resumoProc.triadas) visita(s) triadas | $($resumoProc.sincronizadas) sincronizada(s) | $($resumoProc.pendentes) pendente(s) de envio" -ForegroundColor DarkGray
+    Write-Host "      Registro [GD]: $($resumoProc.caminho)" -ForegroundColor DarkGray
 }
 
 $VisitasBrutas = $null
@@ -874,7 +887,8 @@ try {
     } else {
         $inbox = Get-InboxVisitas
         if ($inbox.Count -gt 0) {
-            Write-Host " [OK] Inbox espelhada: $($inbox.Count) visita(s) detectada(s) em $InboxBase" -ForegroundColor Green
+            Write-Host " [OK] Inbox espelhada [GD]: $($inbox.Count) visita(s) detectada(s)" -ForegroundColor Green
+            Write-Host "      Caminho [GD]: $InboxBase" -ForegroundColor DarkGray
             $VisitasBrutas = $inbox
         } else {
             Write-Host " [i] Inbox vazia/ausente. Usando visitas.json ou colagem." -ForegroundColor DarkGray
@@ -917,6 +931,10 @@ foreach ($Dia in $RelatorioDias) {
 Write-Host "`n=== ETAPA 1: CRIANDO PASTAS / GRAVANDO RELATORIOS NO ONEDRIVE ===" -ForegroundColor Cyan
 $PastasCriadas = Invoke-CriarPastasEArquivar -RelatorioDias $RelatorioDias
 
+# Caminhos [GD] dos registros anuais (_processados.json) para o manifesto
+$AnosRel = @($RelatorioDias | ForEach-Object { $_.data.Substring(0, 4) } | Sort-Object -Unique)
+$RegistrosGD = @($AnosRel | ForEach-Object { Join-Path $InboxBase "$_\_inbox_relatorio_ater\_processados.json" } | Where-Object { Test-Path -LiteralPath $_ })
+
 # ================= ETAPA 2: INDEXAR FOTOS DO SYNCTHING =================
 $RaizesExistentes = @($SyncthingFotos | Where-Object { Test-Path $_ })
 if ($RaizesExistentes.Count -eq 0) {
@@ -925,6 +943,7 @@ if ($RaizesExistentes.Count -eq 0) {
     Write-TriagemRun -Registro ([PSCustomObject]@{
         timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); origens = $RunOrigens
         pastas_criadas = $PastasCriadas; fotos_copiadas = $RunFotos; gps = $RunGps
+        inbox_gd = $InboxBase; registros_gd = $RegistrosGD; raizes_syncthing = $SyncthingFotos; base_od = $OneDriveBase
         contagem = [PSCustomObject]@{ visitas = $TotalVisitas; pastas = $PastasCriadas.Count; fotos = 0 }
     })
     exit 0
@@ -933,7 +952,7 @@ if ($RaizesExistentes.Count -eq 0) {
 Write-Host "`n=== ETAPA 2: BUSCA CIRURGICA POR DATA (ZERO EXIF NAS VISITAS ORGANIZADAS) ===" -ForegroundColor Cyan
 # Datas unicas do relatorio -> so os meses/dias alvo sao acessados (nada de varrer o acervo).
 $DatasAlvo = @($RelatorioDias | ForEach-Object { $_.data } | Sort-Object -Unique)
-Write-Host " Datas alvo: $($DatasAlvo -join ', ') | Raizes: $($RaizesExistentes -join ' | ')" -ForegroundColor DarkGray
+Write-Host " Datas alvo: $($DatasAlvo -join ', ') | Raizes [Syncthing]: $($RaizesExistentes -join ' | ')" -ForegroundColor DarkGray
 # Organizada C: -> E: -> Camera bruta, dedup por nome; visitas vem prontas do _visita.json.
 $TodasFotos = Get-FotosCirurgico -Raizes $RaizesExistentes -DatasAlvo $DatasAlvo -Extensoes $ExtensoesFoto
 $QtdVisita = @($TodasFotos | Where-Object { $_.LoteVisita }).Count
@@ -1022,8 +1041,15 @@ foreach ($Dia in $RelatorioDias) {
                 }
                 & $marcar $v.tag 'manual' 0 $origemManual
             }
-            Write-TriagemLog "MANUAL lote #$NumLote de $($Dia.data): origem $origemManual"
+            Write-TriagemLog "MANUAL lote #$NumLote de $($Dia.data): origem [Syncthing] $origemManual"
             Write-Host "   -> Modo MANUAL: pastas abertas no Explorer. Copie as fotos manualmente; registro marcado como 'manual'." -ForegroundColor Yellow
+            Write-Host "      Origem [Syncthing]: $origemManual" -ForegroundColor DarkGray
+            foreach ($v in $Dia.visitas) {
+                if ($v.CaminhoDestino) {
+                    Write-Host "      Destino [OD]      : $($v.CaminhoDestino)" -ForegroundColor DarkGray
+                    Write-TriagemLog "MANUAL destino [OD]: $($v.CaminhoDestino)"
+                }
+            }
             continue
         }
 
@@ -1039,7 +1065,7 @@ foreach ($Dia in $RelatorioDias) {
                         if (-not $PorTag.ContainsKey($TagFoto)) { $PorTag[$TagFoto] = [System.Collections.Generic.List[object]]::new() }
                         $PorTag[$TagFoto].Add($FotoItem)
                         $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaAlvo.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaAlvo.produtor_pasta })
-                        Write-TriagemLog "COPIADA: $($FotoItem.Arquivo.Name) -> $($VisitaAlvo.produtor_pasta)"
+                        Write-TriagemLog "COPIADA [Syncthing]: $($FotoItem.Arquivo.FullName) -> [OD]: $(Join-Path $VisitaAlvo.CaminhoDestino $FotoItem.Arquivo.Name)"
                         & $marcar $TagFoto 'individual' 1 (Split-Path $FotoItem.Arquivo.FullName -Parent)
                     } catch { Write-Host "     [ERRO] $($_.Exception.Message)" -ForegroundColor Red }
                 }
@@ -1048,7 +1074,8 @@ foreach ($Dia in $RelatorioDias) {
                 $vAlvo = $Dia.visitas | Where-Object { $_.tag -eq $k } | Select-Object -First 1
                 $gps = Export-CoordenadasTxt -FotosLote $PorTag[$k].ToArray() -PastaDestino $vAlvo.CaminhoDestino -NomeProdutor $vAlvo.produtor_pasta
                 $RunGps.Add([PSCustomObject]@{ produtor = $vAlvo.produtor_pasta; count = $gps.Count; lat = $gps.MediaLat; lon = $gps.MediaLon; txt = $gps.TxtPath })
-                Write-Host "   [OK] $($PorTag[$k].Count) foto(s) + GPS ($($gps.Count)) em $($vAlvo.produtor_pasta)" -ForegroundColor Green
+                Write-Host "   [OK] $($PorTag[$k].Count) foto(s) + GPS ($($gps.Count)) copiadas para [OD]" -ForegroundColor Green
+                Write-Host "        Destino [OD]: $($vAlvo.CaminhoDestino)" -ForegroundColor DarkGray
             }
             continue
         }
@@ -1061,12 +1088,13 @@ foreach ($Dia in $RelatorioDias) {
                     Copy-Item -LiteralPath $FotoItem.Arquivo.FullName -Destination $VisitaEscolhida.CaminhoDestino -Force -ErrorAction Stop
                     $copiadasLote++
                     $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaEscolhida.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaEscolhida.produtor_pasta })
-                    Write-TriagemLog "COPIADA: $($FotoItem.Arquivo.Name) -> $($VisitaEscolhida.produtor_pasta)"
+                    Write-TriagemLog "COPIADA [Syncthing]: $($FotoItem.Arquivo.FullName) -> [OD]: $(Join-Path $VisitaEscolhida.CaminhoDestino $FotoItem.Arquivo.Name)"
                 } catch { Write-Host "   [!] Falha ao copiar $($FotoItem.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
             }
             $gps = Export-CoordenadasTxt -FotosLote $Lote -PastaDestino $VisitaEscolhida.CaminhoDestino -NomeProdutor $VisitaEscolhida.produtor_pasta
             $RunGps.Add([PSCustomObject]@{ produtor = $VisitaEscolhida.produtor_pasta; count = $gps.Count; lat = $gps.MediaLat; lon = $gps.MediaLon; txt = $gps.TxtPath })
-            Write-Host "   [OK] $($Lote.Count) foto(s) + GPS ($($gps.Count)) em: $($VisitaEscolhida.produtor_pasta)" -ForegroundColor Green
+            Write-Host "   [OK] $($Lote.Count) foto(s) + GPS ($($gps.Count)) copiadas para [OD]" -ForegroundColor Green
+            Write-Host "        Destino [OD]: $($VisitaEscolhida.CaminhoDestino)" -ForegroundColor DarkGray
             & $marcar $Escolha 'automatico' $copiadasLote (Split-Path $Lote[0].Arquivo.FullName -Parent)
         } else {
             Write-Host "   [!] Tag '$Escolha' invalida. Lote pulado." -ForegroundColor Red
@@ -1080,7 +1108,10 @@ foreach ($Dia in $RelatorioDias) {
 Write-TriagemRun -Registro ([PSCustomObject]@{
     timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); origens = $RunOrigens
     pastas_criadas = $PastasCriadas; fotos_copiadas = $RunFotos; gps = $RunGps
+    inbox_gd = $InboxBase; registros_gd = $RegistrosGD; raizes_syncthing = $SyncthingFotos; base_od = $OneDriveBase
     contagem = [PSCustomObject]@{ visitas = $TotalVisitas; pastas = $PastasCriadas.Count; fotos = $RunFotos.Count }
 })
-Write-TriagemLog "TRIAGEM FINALIZADA"
-Write-Host "`nTriagem finalizada! Rode .\start-sync.ps1 para enviar pastas, fotos e coordenadas_gps.txt ao Google Drive." -ForegroundColor Cyan
+Write-TriagemLog "TRIAGEM FINALIZADA | inbox [GD]: $InboxBase | base [OD]: $OneDriveBase"
+Write-Host "`nTriagem finalizada! Rode .\start-sync.ps1 para enviar pastas, fotos e coordenadas_gps.txt de [OD] para [GDSA]." -ForegroundColor Cyan
+Write-Host "  [OD]  : $OneDriveBase" -ForegroundColor DarkGray
+Write-Host "  [GDSA]: gdrive_saconsult:VALE DO RIBEIRA/FERNANDO" -ForegroundColor DarkGray

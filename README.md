@@ -4,10 +4,21 @@
 
 Sincronizador unidirecional para copiar pastas de produtores rurais do **OneDrive local** para o **Google Drive compartilhado** da conta `fernandoavena.saconsult@gmail.com`.
 
+## 🏷️ Legenda das nuvens (usada no terminal, logs e manifestos)
+
+| Etiqueta | Nuvem | Caminho |
+| :--- | :--- | :--- |
+| **`[GD]`** | Google Drive **Pessoal** (inbox espelhada, unidade `G:`) | `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater` (+ `_processados.json`) |
+| **`[OD]`** | **OneDrive Local** (trabalho/destino da triagem) | `C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\...` |
+| **`[GDSA]`** | Google Drive **Remoto da SA Consultoria** (destino final) | `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
+| `[Syncthing]` | Fotos brutas/organizadas do celular (local) | `C:\Users\randomacesso\Sync\Camera_Celular*` |
+
+Todas as ações no terminal exibem o **caminho completo na linha seguinte** à ação, e os mesmos caminhos completos ficam registrados em `triagem-log.txt` e nos manifestos `runs\`.
+
 ## 📋 Visão Geral
 
-- **Origem**: `C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>\<Pasta do produtor>`
-- **Destino**: `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>` *(hierarquia invertida + nome padronizado)*
+- **Origem [OD]**: `C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\Vale do Ribeira\Fernando\<Cidade>\<Atividade>\<Pasta do produtor>`
+- **Destino [GDSA]**: `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO/<Atividade>/<Cidade>/<Produtor - RESUMO>` *(hierarquia invertida + nome padronizado)*
 - **Modo**: `rclone copy --update` — **nunca apaga** arquivos no destino (protege alterações da equipe)
 - **Autenticação**: OAuth via `rclone config` (remote `gdrive_saconsult`)
 - **Exceções**: pastas listadas em `ignorados.json` são puladas em todas as rotinas
@@ -367,13 +378,13 @@ O arquivo guarda **só o caminho relativo completo** até a pasta do produtor:
 | `[4]` | **Selecionar produtores** — TUI: árvore Cidade > Atividade > Produtor com navegação por setas |
 | `[5]` | **Ver últimas linhas do log** — Mostra as 30 últimas linhas do log mais recente |
 | `[6]` | **Abrir pasta de Logs** — Abre `logs\` no Explorer |
-| `[7]` | **Testar conexão** — Lista pastas no `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
+| `[7]` | **Testar conexão com [GDSA]** (Google Drive SA Consultoria) — Lista pastas no `gdrive_saconsult:VALE DO RIBEIRA/FERNANDO` |
 | `[8]` | **Testar rclone** — Versão, remotes e config redigida (tokens ocultos) |
 | `[9]` | **Configurar rclone** — Abre `rclone config` com o passo a passo |
 | `[10]` | **Agendar tarefa** — Registra/atualiza a tarefa do Agendador (5 min, `-Auto`) |
 | `[11]` | **Remover agendamento** — Desregistra a tarefa do Agendador |
 | `[12]` | **Atualizar rclone** — `scoop update rclone` (ou `winget upgrade`) |
-| `[13]` | **Status de visitas (`_processados.json`)** — lista as visitas triadas separadas entre **Pendentes de sincronização** (`sincronizada: false`) e **Sincronizadas** (`sincronizada: true`), com data, cidade, produtor, `fotos_modo` (destaque amarelo quando `manual`), timestamp de envio e URL do Drive |
+| `[13]` | **Status de visitas ([GD] `_processados.json` → [OD] → [GDSA])** — lista as visitas triadas separadas entre **Pendentes de sincronização** (`sincronizada: false`) e **Sincronizadas** (`sincronizada: true`), com data, cidade, produtor, `fotos_modo` (destaque amarelo quando `manual`), timestamp de envio e, abaixo de cada item, o caminho completo `Destino [OD]` e a `URL [GDSA]` |
 | `[0]` | Sair |
 
 > O cabeçalho do menu mostra se o agendamento está **ATIVO (5 min)** ou desativado.

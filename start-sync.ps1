@@ -175,7 +175,8 @@ function Write-SyncRun {
         $url = Get-DriveFolderUrl -Atividade $m.Atividade -Cidade $m.Cidade -NomeDrive $m.NomeDrive
         $itens.Add([PSCustomObject]@{
             produtor = $m.Produtor; cidade = $m.Cidade; atividade = $m.Atividade
-            nome_drive = $m.NomeDrive; local = $m.Local; url = $url
+            nome_drive = $m.NomeDrive; local = $m.Local
+            nuvem = "$RemotoDrive/$($m.Atividade)/$($m.Cidade)/$($m.NomeDrive)"; url = $url
             copiados = $m.Copiados; atualizados = $m.Atualizados
         })
     }
@@ -188,8 +189,9 @@ function Write-SyncRun {
     $linhas.Add("")
     foreach ($i in $itens) {
         $linhas.Add("[$($i.cidade) | $($i.atividade)] $($i.produtor) -> $($i.nome_drive)")
-        $linhas.Add("  Local: $($i.local)")
-        $linhas.Add("  Drive: $(if ($i.url) { $i.url } else { '(URL nao obtida)' })")
+        $linhas.Add("  Local [OD]  : $($i.local)")
+        $linhas.Add("  Drive [GDSA]: $($i.nuvem)")
+        $linhas.Add("  URL [GDSA]  : $(if ($i.url) { $i.url } else { '(URL nao obtida)' })")
         $linhas.Add("  $($i.copiados) novo(s), $($i.atualizados) atualizado(s)")
         $linhas.Add("")
     }
@@ -210,6 +212,7 @@ function Update-ProcessadosSyncStatus {
         foreach ($s in $Sincronizadas) { [void]$alvos.Add(([string]$s.Local).TrimEnd('\')) }
         $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         $total = 0
+        $pathsAtualizados = [System.Collections.Generic.List[string]]::new()
         foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })) {
             $regPath = Join-Path $ano.FullName '_inbox_relatorio_ater\_processados.json'
             if (-not (Test-Path -LiteralPath $regPath)) { continue }
@@ -232,7 +235,12 @@ function Update-ProcessadosSyncStatus {
                 $tmp = "$regPath.tmp"
                 ConvertTo-Json -InputObject @($regs) -Depth 10 | Set-Content -LiteralPath $tmp -Encoding UTF8
                 Move-Item -LiteralPath $tmp -Destination $regPath -Force
+                $pathsAtualizados.Add($regPath)
             }
+        }
+        if ($total -gt 0) {
+            Write-Host "[OK] $total visita(s) marcadas como sincronizadas ([GDSA])" -ForegroundColor Cyan
+            foreach ($p in $pathsAtualizados) { Write-Host "     Registro [GD]: $p" -ForegroundColor DarkGray }
         }
         return $total
     } catch { return 0 }   # G: offline/erro inesperado: nunca derruba o sync
@@ -240,11 +248,12 @@ function Update-ProcessadosSyncStatus {
 
 # Opção [13]: lista visitas triadas separadas entre pendentes e sincronizadas
 function Show-ProcessadosStatus {
-    Write-Host "`n=== STATUS DAS VISITAS TRIADAS (_processados.json) ===" -ForegroundColor Cyan
+    Write-Host "`n=== STATUS DAS VISITAS TRIADAS ([GD] _processados.json -> [OD] -> [GDSA]) ===" -ForegroundColor Cyan
     if (-not (Test-Path -LiteralPath $InboxBase)) {
         Write-Host "[i] Inbox ausente/offline: $InboxBase" -ForegroundColor Yellow
         return
     }
+    Write-Host " Registro [GD]: $InboxBase\<AAAA>\_inbox_relatorio_ater\_processados.json" -ForegroundColor DarkGray
     $pend = [System.Collections.Generic.List[object]]::new()
     $sync = [System.Collections.Generic.List[object]]::new()
     foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' } | Sort-Object Name)) {
@@ -264,6 +273,7 @@ function Show-ProcessadosStatus {
         $cor = if ($modo -eq 'manual') { 'Yellow' } else { 'White' }
         $aviso = if ($modo -eq 'manual') { '  <-- fotos copiadas MANUALMENTE, conferir antes de enviar' } else { '' }
         Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | fotos: $modo | triada em $($r.processado_em)$aviso" -ForegroundColor $cor
+        if ($r.destino_onedrive) { Write-Host "      Destino [OD]: $($r.destino_onedrive)" -ForegroundColor DarkGray }
     }
     Write-Host "`n SINCRONIZADAS ($($sync.Count)):" -ForegroundColor Green
     if ($sync.Count -eq 0) { Write-Host "   (nenhuma)" -ForegroundColor DarkGray }
@@ -272,7 +282,8 @@ function Show-ProcessadosStatus {
         $modo = if ($pm -and $pm.Value) { $pm.Value } else { '-' }
         $cor = if ($modo -eq 'manual') { 'Yellow' } else { 'White' }
         Write-Host "   [$($r.data)] $($r.cidade) | $($r.produtor_pasta) | fotos: $modo | enviada em $($r.sincronizada_em)" -ForegroundColor $cor
-        if ($r.drive_url) { Write-Host "      $($r.drive_url)" -ForegroundColor DarkCyan }
+        if ($r.destino_onedrive) { Write-Host "      Destino [OD] : $($r.destino_onedrive)" -ForegroundColor DarkGray }
+        if ($r.drive_url) { Write-Host "      URL [GDSA]   : $($r.drive_url)" -ForegroundColor DarkCyan }
     }
 }
 
@@ -482,6 +493,8 @@ function Show-ProdutoresSelector {
                     $SyncOkSel = [System.Collections.Generic.List[object]]::new()
                     foreach ($Sel in $Alvos) {
                         Write-Host "-> $($Sel.Cidade) | $($Sel.Atividade) | $($Sel.Produtor)" -ForegroundColor Green
+                        Write-Host "   Origem [OD]  : $($Sel.Local)" -ForegroundColor DarkGray
+                        Write-Host "   Destino [GDSA]: $($Sel.Nuvem)" -ForegroundColor DarkGray
                         $R = Invoke-RcloneCopy -Local $Sel.Local -Nuvem $Sel.Nuvem -Simulacao $Simular -LogFile $LogSel
                         $Pend += $R.Pendentes
                         if ($R.Codigo -ne 0) { $FalhasSel++ }
@@ -505,8 +518,7 @@ function Show-ProdutoresSelector {
                     }
                     Write-SyncRun -Escopo 'SELETOR' -Modificados $ModSel -Simulacao $Simular
                     if (-not $Simular) {
-                        $nMarcSel = Update-ProcessadosSyncStatus -Sincronizadas $SyncOkSel
-                        if ($nMarcSel -gt 0) { Write-Host "[OK] $nMarcSel visita(s) marcadas como sincronizadas em _processados.json" -ForegroundColor Cyan }
+                        $null = Update-ProcessadosSyncStatus -Sincronizadas $SyncOkSel   # exibe [OK] + Registro [GD] internamente
                     }
 
                     if ($Simular) {
@@ -622,6 +634,8 @@ function Invoke-AterSync {
     Write-Host "`n============================================================" -ForegroundColor Cyan
     Write-Host " INICIANDO: $ModoTexto" -ForegroundColor Cyan
     Write-Host " Horário: $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')" -ForegroundColor Gray
+    Write-Host " Origem [OD]  : $OrigemBase" -ForegroundColor Gray
+    Write-Host " Destino [GDSA]: $RemotoDrive" -ForegroundColor Gray
     Write-Host "============================================================`n" -ForegroundColor Cyan
 
     # Uma tarefa por pasta de produtor (nome padronizado no destino), já sem as ignoradas
@@ -650,8 +664,8 @@ function Invoke-AterSync {
     foreach ($T in $Tarefas) {
         $Indice++
         Write-Host "[$Indice/$($Tarefas.Count)] $($T.Cidade) | $($T.Atividade) | $($T.Produtor)" -ForegroundColor Green
-        Write-Host "   Local : $($T.Local)" -ForegroundColor DarkGray
-        Write-Host "   Nuvem : $($T.Nuvem)" -ForegroundColor DarkGray
+        Write-Host "   Origem [OD]  : $($T.Local)" -ForegroundColor DarkGray
+        Write-Host "   Destino [GDSA]: $($T.Nuvem)" -ForegroundColor DarkGray
 
         $Resultado = Invoke-RcloneCopy -Local $T.Local -Nuvem $T.Nuvem -Simulacao $Simulacao -LogFile $LogFile
         $Pendentes += $Resultado.Pendentes
@@ -701,8 +715,7 @@ function Invoke-AterSync {
 
     # Ciclo de vida: marca sincronizada=true no _processados.json da triagem (nunca em dry-run)
     if (-not $Simulacao) {
-        $nMarcadas = Update-ProcessadosSyncStatus -Sincronizadas $SyncOk
-        if ($nMarcadas -gt 0) { Write-Host "[OK] $nMarcadas visita(s) marcadas como sincronizadas em _processados.json" -ForegroundColor Cyan }
+        $null = Update-ProcessadosSyncStatus -Sincronizadas $SyncOk   # exibe [OK] + Registro [GD] internamente
     }
 
     return ($Falhas -eq 0)
@@ -731,8 +744,8 @@ do {
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host "   SYNC ATER - ONEDRIVE -> GOOGLE DRIVE (SA CONSULTORIA)    " -ForegroundColor White
     Write-Host "============================================================" -ForegroundColor Cyan
-    Write-Host " Origem : $OrigemBase" -ForegroundColor Gray
-    Write-Host " Destino: $RemotoDrive" -ForegroundColor Gray
+    Write-Host " Origem [OD]  : $OrigemBase" -ForegroundColor Gray
+    Write-Host " Destino [GDSA]: $RemotoDrive" -ForegroundColor Gray
     Write-Host " Modo   : COPY (--update) | Não apaga arquivos do Drive" -ForegroundColor DarkGreen
     Write-Host " Agendar: $StatusAgenda" -ForegroundColor DarkGreen
     Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
@@ -742,14 +755,14 @@ do {
     Write-Host " [4] Selecionar produtores (setas/Espaco/D/S)" -ForegroundColor White
     Write-Host " [5] Ver últimas linhas do log" -ForegroundColor White
     Write-Host " [6] Abrir pasta de Logs" -ForegroundColor White
-    Write-Host " [7] Testar conexão com Google Drive" -ForegroundColor White
+    Write-Host " [7] Testar conexão com [GDSA] (Google Drive SA Consultoria)" -ForegroundColor White
     Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
     Write-Host " [8] Testar rclone (versão e remotes)" -ForegroundColor Magenta
     Write-Host " [9] Configurar rclone (rclone config)" -ForegroundColor Magenta
     Write-Host "[10] Agendar tarefa (a cada 5 min)" -ForegroundColor Magenta
     Write-Host "[11] Remover agendamento" -ForegroundColor Magenta
     Write-Host "[12] Atualizar rclone" -ForegroundColor Magenta
-    Write-Host "[13] Status de visitas (_processados.json)" -ForegroundColor Magenta
+    Write-Host "[13] Status de visitas ([GD] _processados.json -> [OD] -> [GDSA])" -ForegroundColor Magenta
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 

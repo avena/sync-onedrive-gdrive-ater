@@ -1,5 +1,11 @@
 # 📋 Rotina Dia a Dia — Fluxo ATER (Campo → Nuvem)
 
+> **Legenda das nuvens** (aparece no terminal, logs e manifestos, sempre com o caminho completo na linha de baixo):
+> **`[GD]`** = Google Drive Pessoal (`G:\Meu Drive\<AAAA>\_inbox_relatorio_ater` + `_processados.json`) ·
+> **`[OD]`** = OneDrive Local (`C:\Users\randomacesso\OneDrive_contaedgesoronote\OneDrive\SA Consultoria\...`) ·
+> **`[GDSA]`** = Google Drive Remoto da SA Consultoria (`gdrive_saconsult:VALE DO RIBEIRA/FERNANDO`) ·
+> `[Syncthing]` = fotos do celular (`Sync\Camera_Celular*`).
+
 Abrir o terminal (**PowerShell 7**) na pasta dos scripts:
 ```powershell
 cd C:\Users\randomacesso\sync-onedrive-gdrive-ater
