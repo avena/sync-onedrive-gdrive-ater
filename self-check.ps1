@@ -255,6 +255,13 @@ try {
     if (@($fc | Where-Object { $_.DataStr -ne '2026-11-06' }).Count -ne 0) { throw 'triagem: fotos de outro dia nao podem entrar' }
     if (@($fc | Where-Object { $_.Arquivo.Name -eq 'SEM_PADRAO.jpg' }).Count -ne 1) { throw 'triagem: fallback LastWriteTime do dia falhou' }
     if (@($fc | Where-Object { $_.Arquivo.Name -eq 'IMG_20261106_144600.jpg' }).Count -ne 1) { throw 'triagem: dedup por nome entre raizes falhou' }
+    # origem curta dos lotes (AAAA\MM\DD_visita / avulsa / Camera bruta), sem C:\Users\...
+    $fVis = $fc | Where-Object { $_.Arquivo.Name -eq 'foto_sem_padrao.jpg' }
+    if ((Get-OrigemCurtaFoto -Foto $fVis) -ne '2026\11\06_visita_1') { throw 'triagem: origem curta da visita falhou' }
+    $fAv = $fc | Where-Object { $_.Arquivo.Name -eq 'IMG_20261106_160000.jpg' }
+    if ((Get-OrigemCurtaFoto -Foto $fAv) -ne '2026\11 (avulsa)') { throw 'triagem: origem curta da avulsa falhou' }
+    $fCam = [PSCustomObject]@{ LoteVisita = $null; Arquivo = [PSCustomObject]@{ FullName = 'C:\Sync\Camera_Celular\Camera\IMG_20261106_170000.jpg' } }
+    if ((Get-OrigemCurtaFoto -Foto $fCam) -ne 'Camera (bruta)') { throw 'triagem: origem curta da Camera bruta falhou' }
 
     # 1n) triagem: horario sem -null e atalho S
     if ((Format-HorarioVisita '14:46' 'null') -ne '14:46') { throw 'triagem: hora_fim "null" vazou na exibicao' }

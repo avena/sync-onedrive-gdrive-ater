@@ -373,6 +373,17 @@ function New-FotoItem {
     }
 }
 
+# Rotulo CURTO da origem da foto, no padrao do organizar-camera (AAAA\MM\DD_visita_N),
+# sem o prefixo C:\Users\... — so o ano/mes/pasta p/ situar de onde vem o lote.
+function Get-OrigemCurtaFoto {
+    param($Foto)
+    if ($Foto.LoteVisita) { return [string]$Foto.LoteVisita }
+    $full = $Foto.Arquivo.FullName
+    if ($full -match '(\d{4}\\\d{2})\\[^\\]+$') { return "$($Matches[1]) (avulsa)" }
+    if ($full -match '\\Camera\\[^\\]+$') { return 'Camera (bruta)' }
+    return (Split-Path (Split-Path $full -Parent) -Leaf)
+}
+
 # ================= BUSCA CIRURGICA POR DATA (zero EXIF nas visitas organizadas) =================
 function Get-FotosCirurgico {
     # Em vez de varrer o acervo inteiro: acessa so <AAAA>\<MM> dos meses alvo,
@@ -1186,8 +1197,9 @@ foreach ($Dia in $RelatorioDias) {
         $NumLote++
         $QtdGps = @($Lote | Where-Object { $_.TemGps }).Count
         $Sugestao = Get-SugestaoTag -Lote $Lote -Visitas $Dia.visitas
-        $OrigemLote = if ($Lote[0].LoteVisita) { " | visita: $(Split-Path $Lote[0].LoteVisita -Leaf)" } else { '' }
-        Write-Host "`n Lote #$NumLote : $($Lote.Count) foto(s) | $($Lote[0].HoraStr) as $($Lote[-1].HoraStr) | GPS: $QtdGps$OrigemLote" -ForegroundColor Cyan
+        Write-Host "`n Lote #$NumLote : $($Lote.Count) foto(s) | $($Lote[0].HoraStr) as $($Lote[-1].HoraStr) | GPS: $QtdGps" -ForegroundColor Cyan
+        $origensLote = @($Lote | ForEach-Object { Get-OrigemCurtaFoto -Foto $_ } | Sort-Object -Unique)
+        Write-Host "   Origem [Syncthing]: $($origensLote -join ' | ')  (AAAA\MM\pasta do organizar-camera)" -ForegroundColor DarkGray
         if ($Sugestao) {
             $vSug = $Dia.visitas | Where-Object { $_.tag -eq $Sugestao } | Select-Object -First 1
             Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER ou S para aceitar" -ForegroundColor Yellow
