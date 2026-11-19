@@ -299,11 +299,15 @@ O script **cruza o horário médio do lote** com `hora_inicio`/`hora_fim` ou `pe
 
 ### Conferir / Reprocessar visitas já processadas (`-Conferir`)
 
-Como o `_processados.json` torna a triagem idempotente (visitas já registradas não reaparecem no fluxo normal), o modo **`-Conferir`** lista **todas as visitas já processadas** de todos os anos e, para cada uma, audita o destino `[OD]` sem alterar nada:
+Como o `_processados.json` torna a triagem idempotente (visitas já registradas não reaparecem no fluxo normal), o modo **`-Conferir`** lista **todas as visitas já processadas** de todos os anos e, para cada uma, **mostra a triagem que foi feita** e audita o destino `[OD]` sem alterar nada:
+
+- **O que foi triado**: caminho completo do `TXT [OD]` (ou `FALTA` + origem `[GD]`), quantas fotos a triagem copiou (`fotos_copiadas`) e de qual pasta `[Syncthing]` (`fotos_origem_sugerida`), o `fotos_modo`, e se já foi **enviada ao `[GDSA]`** (`AINDA NAO ENVIADA — rode start-sync` quando `sincronizada: false`).
 
 - **TXT**: o `.txt` registrado em `arquivos_levados` existe na pasta do produtor? (`OK` / `FALTA`)
 - **Fotos**: quantas fotos há no destino vs `fotos_copiadas` registradas (ex.: `10 no destino / 20 registradas` — você pode ter apagado de propósito).
 - **Pasta**: o destino existe no OneDrive?
+
+Ao rodar a triagem **normal** sem visitas novas na inbox (tudo já triado), o script avisa claramente quantas visitas anteriores existem e oferece **`[C]` Conferir/reprocessar** (entra neste mesmo fluxo), **`[M]`** colar JSON manual ou **`[Q]`** sair — não cai mais direto na colagem de JSON.
 
 Opções por visita: **`[T]`** recopia o `.txt` limpo (sem YAML) e os anexos ATV 1 da inbox `[GD]` (inbox intacta); **`[F]`** faz busca cirúrgica pela data da visita (respeitando `fotos_origem_sugerida`), lista as fotos que **faltam** no destino e pergunta `Copiar N foto(s) faltante(s)? (S/N)` — **`N` mantém tudo como está** (nunca apaga nem força fotos a mais; ideal para quando você curou 20 → 10); **`[A]`** ambos; **`[P]`** pular; **`[Q]`** sair. Ao copiar fotos, atualiza `coordenadas_gps.txt` e `fotos_copiadas` no registro (gravação atômica). Tudo fica em `triagem-log.txt` com caminhos completos `[GD]`/`[Syncthing]`/`[OD]`.
 

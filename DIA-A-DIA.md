@@ -47,6 +47,7 @@ Cruza os relatórios da inbox (`G:`) com as fotos do dia, cria as pastas no OneD
 ```
 
 * **Tela 1 (Relatórios):** Confira as visitas (`E` edita, `D` remove) → aperte **`C` / `Enter`** e confirme **`S`**.
+* Rodou de novo e **tudo já estava triado**? Ele avisa (nada de tela estranha de colar JSON) e oferece **`C`** = Conferir/reprocessar as visitas anteriores, **`M`** = colar JSON manual, **`Q`** = sair.
 * **Tela 2 (Fotos):** O script sugere o produtor pelo horário da visita → aperte **`Enter` ou `S`** para aceitar (ou digite a letra do produtor / `P` para pular / `I` foto a foto).
 * **Lote com fotos de vizinhos misturadas?** Aperte **`M`** (Manual): o Explorer abre a pasta de origem das fotos e as pastas dos produtores do dia no OneDrive para você copiar à mão; o registro fica marcado `fotos_modo: manual` (destacado na opção `13` do `start-sync`).
 * Cada visita confirmada é registrada em `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com **`sincronizada: false`** (os originais da inbox ficam intactos). No início, o script mostra o resumo do ano: `X triadas | Y sincronizadas | Z pendentes de envio`.

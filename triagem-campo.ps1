@@ -873,6 +873,88 @@ function Save-ProcessadosPorArquivo {
     }
 }
 
+# Fluxo interativo do -Conferir: mostra a triagem que FOI FEITA (TXT/fotos/origem/envio)
+# e permite refazer com S/N (nunca apaga nem forca fotos a mais).
+function Invoke-ConferirReprocessar {
+    Write-Host "`n=== CONFERIR / REPROCESSAR VISITAS JA PROCESSADAS ([GD] -> [OD]) ===" -ForegroundColor Cyan
+    $regsConf = Get-ProcessadosTodos
+    if (@($regsConf).Count -eq 0) {
+        Write-Host "[i] Nenhum registro encontrado em _processados.json ($InboxBase)." -ForegroundColor Yellow
+        return
+    }
+    Write-Host " $(@($regsConf).Count) visita(s) processada(s) listada(s). Opcoes por visita:" -ForegroundColor Gray
+    Write-Host "   [T] Recopiar TXT/anexos da inbox [GD] | [F] Copiar fotos faltantes | [A] Ambos | [P] Pular | [Q] Sair" -ForegroundColor Gray
+    foreach ($r in $regsConf) {
+        $aud = Test-VisitaDestino -Registro $r
+        $temProblema = (-not $aud.PastaExiste) -or (@($aud.TxtFaltando).Count -gt 0) -or ($aud.FotosFaltando -gt 0)
+        $cor = if ($temProblema) { 'Yellow' } else { 'Green' }
+        Write-Host "`n [$($r.data)] $($r.cidade) | $($r.atividade) | $($r.produtor_pasta)" -ForegroundColor $cor
+        Write-Host "   Destino [OD]: $($r.destino_onedrive)" -ForegroundColor DarkGray
+        # TXT: caminho completo no destino, ou o que falta + origem na inbox
+        $txtsReg = @(Get-PropValue $r 'arquivos_levados' | Where-Object { $_ -like '*.txt' })
+        if (@($aud.TxtFaltando).Count -gt 0) {
+            Write-Host "   TXT: FALTA no destino ($(@($aud.TxtFaltando) -join ', '))" -ForegroundColor Yellow
+            Write-Host "        Origem [GD]: $($r.pasta_inbox)" -ForegroundColor DarkGray
+        } elseif ($txtsReg.Count -gt 0 -and $aud.PastaExiste) {
+            Write-Host "   TXT [OD]: $(Join-Path $r.destino_onedrive $txtsReg[0])" -ForegroundColor DarkGray
+        } else {
+            Write-Host "   TXT: nenhum .txt registrado nesta visita" -ForegroundColor DarkGray
+        }
+        # Fotos: o que a triagem copiou, de onde, e o que ha hoje no destino
+        Write-Host "   Fotos: $($aud.FotosNoDestino) no destino / $($aud.FotosRegistradas) copiadas na triagem | modo: $(Get-PropValue $r 'fotos_modo')"
+        $origemFotos = [string](Get-PropValue $r 'fotos_origem_sugerida')
+        if ($origemFotos) { Write-Host "        Origem [Syncthing]: $origemFotos" -ForegroundColor DarkGray }
+        if (Get-PropValue $r 'sincronizada') {
+            Write-Host "   [GDSA]: enviada em $(Get-PropValue $r 'sincronizada_em')" -ForegroundColor Green
+        } else {
+            Write-Host "   [GDSA]: AINDA NAO ENVIADA (rode .\start-sync.ps1)" -ForegroundColor Yellow
+        }
+        if (-not $aud.PastaExiste) { Write-Host "   [!] Pasta de destino nao existe no OneDrive." -ForegroundColor Red }
+        $op = (Read-Host "   [T] TXT/anexos [F] fotos faltantes [A] ambos [P] pular [Q] sair").Trim().ToUpper()
+        if ($op -eq 'Q') { break }
+        if ($op -eq 'P' -or $op -eq '') { continue }
+        $mudou = $false
+        if ($op -in @('T', 'A')) {
+            $null = Repair-VisitaTxtAnexos -Registro $r
+            $mudou = $true
+        }
+        if ($op -in @('F', 'A')) {
+            $falt = Get-FotosFaltantesVisita -Registro $r
+            if (@($falt).Count -eq 0) {
+                Write-Host "   [OK] Nenhuma foto faltante encontrada para esta data/origem." -ForegroundColor Green
+            } else {
+                Write-Host "   Fotos faltantes ($(@($falt).Count)):" -ForegroundColor Yellow
+                $falt | Select-Object -First 20 | ForEach-Object { Write-Host "     $($_.Arquivo.Name)  [Syncthing]: $($_.Arquivo.DirectoryName)" -ForegroundColor DarkGray }
+                $resp = (Read-Host "   Copiar $(@($falt).Count) foto(s) faltante(s) para [OD]? (S/N — N mantem como esta)").Trim()
+                if ($resp -match '^[Ss]') {
+                    $copiadasConf = [System.Collections.Generic.List[object]]::new()
+                    foreach ($f in $falt) {
+                        try {
+                            Copy-Item -LiteralPath $f.Arquivo.FullName -Destination $r.destino_onedrive -Force -ErrorAction Stop
+                            $copiadasConf.Add($f)
+                            Write-TriagemLog "REPROCESSO COPIADA [Syncthing]: $($f.Arquivo.FullName) -> [OD]: $(Join-Path $r.destino_onedrive $f.Arquivo.Name)"
+                        } catch { Write-Host "   [!] Falha ao copiar $($f.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
+                    }
+                    if ($copiadasConf.Count -gt 0) {
+                        $null = Export-CoordenadasTxt -FotosLote $copiadasConf.ToArray() -PastaDestino $r.destino_onedrive -NomeProdutor $r.produtor_pasta
+                        $novoTotal = @(Get-ChildItem -LiteralPath $r.destino_onedrive -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() }).Count
+                        Add-Member -InputObject $r -NotePropertyName fotos_copiadas -NotePropertyValue $novoTotal -Force
+                        if ((Get-PropValue $r 'fotos_modo') -eq 'pulado') { Add-Member -InputObject $r -NotePropertyName fotos_modo -NotePropertyValue 'automatico' -Force }
+                        $mudou = $true
+                        Write-Host "   [OK] $($copiadasConf.Count) foto(s) copiadas para [OD]: $($r.destino_onedrive)" -ForegroundColor Green
+                    }
+                } else { Write-Host "   -> Fotos nao alteradas (ok manter menos fotos que o original)." -ForegroundColor DarkGray }
+            }
+        }
+        if ($mudou) {
+            Save-ProcessadosPorArquivo -Registros $regsConf
+            Write-Host "   [OK] Registro [GD] atualizado: $($r.registro_path)" -ForegroundColor Cyan
+        }
+    }
+    Write-TriagemLog "CONFERENCIA FINALIZADA"
+    Write-Host "`nConferencia finalizada. Rode .\start-sync.ps1 para enviar o que falta de [OD] para [GDSA]." -ForegroundColor Cyan
+}
+
 # ================= CRIAR PASTAS + GRAVAR RELATORIOS (copia nao-destrutiva da inbox) =================
 function Invoke-CriarPastasEArquivar {
     param([array]$RelatorioDias)
@@ -995,66 +1077,7 @@ if ($resumoProc) {
 
 # ================= MODO -Conferir: LISTAR / CONFERIR / REPROCESSAR VISITAS JA PROCESSADAS =================
 if ($Conferir) {
-    Write-Host "`n=== CONFERIR / REPROCESSAR VISITAS JA PROCESSADAS ([GD] -> [OD]) ===" -ForegroundColor Cyan
-    $regsConf = Get-ProcessadosTodos
-    if (@($regsConf).Count -eq 0) {
-        Write-Host "[i] Nenhum registro encontrado em _processados.json ($InboxBase)." -ForegroundColor Yellow
-        exit 0
-    }
-    Write-Host " $(@($regsConf).Count) visita(s) processada(s) listada(s). Opcoes por visita:" -ForegroundColor Gray
-    Write-Host "   [T] Recopiar TXT/anexos da inbox [GD] | [F] Copiar fotos faltantes | [A] Ambos | [P] Pular | [Q] Sair" -ForegroundColor Gray
-    foreach ($r in $regsConf) {
-        $aud = Test-VisitaDestino -Registro $r
-        $txtStatus = if (@($aud.TxtFaltando).Count -gt 0) { "FALTA ($(@($aud.TxtFaltando) -join ', '))" } else { 'OK' }
-        $temProblema = (-not $aud.PastaExiste) -or (@($aud.TxtFaltando).Count -gt 0) -or ($aud.FotosFaltando -gt 0)
-        $cor = if ($temProblema) { 'Yellow' } else { 'Green' }
-        Write-Host "`n [$($r.data)] $($r.cidade) | $($r.produtor_pasta)" -ForegroundColor $cor
-        Write-Host "   Destino [OD]: $($r.destino_onedrive)" -ForegroundColor DarkGray
-        Write-Host "   TXT: $txtStatus | Fotos: $($aud.FotosNoDestino) no destino / $($aud.FotosRegistradas) registradas | sincronizada: $(Get-PropValue $r 'sincronizada') | modo: $(Get-PropValue $r 'fotos_modo')"
-        if (-not $aud.PastaExiste) { Write-Host "   [!] Pasta de destino nao existe no OneDrive." -ForegroundColor Red }
-        $op = (Read-Host "   [T] TXT/anexos [F] fotos faltantes [A] ambos [P] pular [Q] sair").Trim().ToUpper()
-        if ($op -eq 'Q') { break }
-        if ($op -eq 'P' -or $op -eq '') { continue }
-        $mudou = $false
-        if ($op -in @('T', 'A')) {
-            $null = Repair-VisitaTxtAnexos -Registro $r
-            $mudou = $true
-        }
-        if ($op -in @('F', 'A')) {
-            $falt = Get-FotosFaltantesVisita -Registro $r
-            if (@($falt).Count -eq 0) {
-                Write-Host "   [OK] Nenhuma foto faltante encontrada para esta data/origem." -ForegroundColor Green
-            } else {
-                Write-Host "   Fotos faltantes ($(@($falt).Count)):" -ForegroundColor Yellow
-                $falt | Select-Object -First 20 | ForEach-Object { Write-Host "     $($_.Arquivo.Name)  [Syncthing]: $($_.Arquivo.DirectoryName)" -ForegroundColor DarkGray }
-                $resp = (Read-Host "   Copiar $(@($falt).Count) foto(s) faltante(s) para [OD]? (S/N — N mantem como esta)").Trim()
-                if ($resp -match '^[Ss]') {
-                    $copiadasConf = [System.Collections.Generic.List[object]]::new()
-                    foreach ($f in $falt) {
-                        try {
-                            Copy-Item -LiteralPath $f.Arquivo.FullName -Destination $r.destino_onedrive -Force -ErrorAction Stop
-                            $copiadasConf.Add($f)
-                            Write-TriagemLog "REPROCESSO COPIADA [Syncthing]: $($f.Arquivo.FullName) -> [OD]: $(Join-Path $r.destino_onedrive $f.Arquivo.Name)"
-                        } catch { Write-Host "   [!] Falha ao copiar $($f.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
-                    }
-                    if ($copiadasConf.Count -gt 0) {
-                        $null = Export-CoordenadasTxt -FotosLote $copiadasConf.ToArray() -PastaDestino $r.destino_onedrive -NomeProdutor $r.produtor_pasta
-                        $novoTotal = @(Get-ChildItem -LiteralPath $r.destino_onedrive -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() }).Count
-                        Add-Member -InputObject $r -NotePropertyName fotos_copiadas -NotePropertyValue $novoTotal -Force
-                        if ((Get-PropValue $r 'fotos_modo') -eq 'pulado') { Add-Member -InputObject $r -NotePropertyName fotos_modo -NotePropertyValue 'automatico' -Force }
-                        $mudou = $true
-                        Write-Host "   [OK] $($copiadasConf.Count) foto(s) copiadas para [OD]: $($r.destino_onedrive)" -ForegroundColor Green
-                    }
-                } else { Write-Host "   -> Fotos nao alteradas (ok manter menos fotos que o original)." -ForegroundColor DarkGray }
-            }
-        }
-        if ($mudou) {
-            Save-ProcessadosPorArquivo -Registros $regsConf
-            Write-Host "   [OK] Registro [GD] atualizado: $($r.registro_path)" -ForegroundColor Cyan
-        }
-    }
-    Write-TriagemLog "CONFERENCIA FINALIZADA"
-    Write-Host "`nConferencia finalizada. Rode .\start-sync.ps1 para enviar o que falta de [OD] para [GDSA]." -ForegroundColor Cyan
+    Invoke-ConferirReprocessar
     exit 0
 }
 
@@ -1069,7 +1092,17 @@ try {
             Write-Host "      Caminho [GD]: $InboxBase" -ForegroundColor DarkGray
             $VisitasBrutas = $inbox
         } else {
-            Write-Host " [i] Inbox vazia/ausente. Usando visitas.json ou colagem." -ForegroundColor DarkGray
+            # Sem visitas novas: ou tudo ja foi triado (idempotencia) ou a inbox esta vazia/offline.
+            $histConf = Get-ProcessadosTodos
+            if (@($histConf).Count -gt 0) {
+                Write-Host " [i] Nenhuma visita NOVA na inbox [GD] — $(@($histConf).Count) visita(s) anterior(es) ja foram triadas." -ForegroundColor Yellow
+                Write-Host "      Registro [GD]: $(@($histConf)[0].registro_path)" -ForegroundColor DarkGray
+                $opInbox = (Read-Host " [C] Conferir/reprocessar as ja triadas | [M] Colar JSON manual | [Q] Sair").Trim().ToUpper()
+                if ($opInbox -eq 'C') { Invoke-ConferirReprocessar; exit 0 }
+                if ($opInbox -ne 'M') { Write-Host "[OK] Nada a fazer." -ForegroundColor Green; exit 0 }
+            } else {
+                Write-Host " [i] Inbox vazia/ausente. Usando visitas.json ou colagem." -ForegroundColor DarkGray
+            }
             $VisitasBrutas = ConvertFrom-DiasParsed (Read-JsonManual -Arquivo $VisitasJson)
         }
     }
