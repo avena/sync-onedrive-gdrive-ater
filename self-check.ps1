@@ -48,11 +48,15 @@ foreach ($F in $AstA.FindAll({ $args[0] -is [System.Management.Automation.Langua
     . ([scriptblock]::Create($F.Extent.Text))
 }
 
-# Piloto ponta a ponta: valida sintaxe (6º script; não executa o fluxo real nem carrega funções p/ evitar colisões)
+# Piloto ponta a ponta: valida sintaxe (6º script; não executa o fluxo real). Carrega SOMENTE
+# a função de limpeza do _processados.json (nome único, sem colisão com os demais scripts).
 $ScriptPiloto = Join-Path $PSScriptRoot 'piloto-ponta-a-ponta.ps1'
 $ErrosP = $null
 $AstP = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPiloto, [ref]$null, [ref]$ErrosP)
 if ($ErrosP.Count) { throw "Sintaxe piloto: $($ErrosP[0].Message)" }
+foreach ($F in $AstP.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Remove-ProcessadosPiloto' }, $true)) {
+    . ([scriptblock]::Create($F.Extent.Text))
+}
 
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ("ater_check_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
@@ -62,21 +66,37 @@ try {
     $Cidades       = @('Jacupiranga')
     $Atividades    = @('ATIVIDADE INDIVIDUAL 1', 'ATIVIDADE INDIVIDUAL 2')
     $RemotoDrive   = 'gdrive:TESTE'
+    $CidadesRemoto = @{ 'Pariquera-Açu' = 'PARIQUERA AÇU'; 'Juquia' = 'Juquiá' }
+    $CidadesOneDrive = @{ 'Juquiá' = 'Juquia' }
     $IgnoradosFile = Join-Path $Tmp 'ignorados.json'
 
+    # Pastas válidas p/ a trava anti-retroativo: nome com "- RESUMO" + .txt de relatório
     foreach ($Ativ in $Atividades) {
-        foreach ($Nome in @('2026-11-JOAO DA SILVA', '03 - Pedro Oliveira')) {
-            New-Item -ItemType Directory -Path (Join-Path $OrigemBase "Jacupiranga\$Ativ\$Nome") -Force | Out-Null
+        foreach ($Nome in @('07-2026-11-JOAO DA SILVA - RESUMO', '03 - Pedro Oliveira - RESUMO')) {
+            $pastaValida = Join-Path $OrigemBase "Jacupiranga\$Ativ\$Nome"
+            New-Item -ItemType Directory -Path $pastaValida -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $pastaValida 'relatorio.txt') -Encoding UTF8 -Value 'Corpo do relatorio'
         }
     }
+    # Pastas que a trava DEVE bloquear (nunca sobem retroativamente ao GDSA)
+    $baseAtv1 = Join-Path $OrigemBase 'Jacupiranga\ATIVIDADE INDIVIDUAL 1'
+    $pSemResumo = Join-Path $baseAtv1 '04-2026-11-Juari'
+    New-Item -ItemType Directory -Path $pSemResumo -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $pSemResumo 'relatorio.txt') -Encoding UTF8 -Value 'Corpo'
+    $pSoFotos = Join-Path $baseAtv1 '05-2026-11-Coicieçao E Hermes - RESUMO'
+    New-Item -ItemType Directory -Path $pSoFotos -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $pSoFotos 'IMG_20261105_090000.jpg') | Out-Null
+    $pSoGps = Join-Path $baseAtv1 '06-2026-11-Maria Da Graça - RESUMO'
+    New-Item -ItemType Directory -Path $pSoGps -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $pSoGps 'coordenadas_gps.txt') -Encoding UTF8 -Value 'GPS'
 
-    # 1) renomeação no destino
-    if ((Get-NomeResumo '2026-11-JOAO DA SILVA') -ne 'JOAO DA SILVA - RESUMO') { throw 'renomeação com data falhou' }
-    if ((Get-NomeResumo '03 - Pedro Oliveira') -ne 'Pedro Oliveira - RESUMO') { throw 'renomeação com número falhou' }
+    # 1) nome no destino = mesmo nome local, data completa vira DD-AAAA-MM- (dia primeiro)
+    if ((Get-NomeResumo '2026-11-07-MARIA DA GRACA - MODESTO - RESUMO') -ne '07-2026-11-MARIA DA GRACA - MODESTO - RESUMO') { throw 'renomeação: data completa deveria virar DD-AAAA-MM-' }
+    if ((Get-NomeResumo '2026-11-07-MARIA DA GRACA - MODESTO') -ne '07-2026-11-MARIA DA GRACA - MODESTO - RESUMO') { throw 'renomeação: sufixo RESUMO não adicionado' }
     if ((Get-NomeResumo 'SEM PREFIXO') -ne 'SEM PREFIXO - RESUMO') { throw 'renomeação sem prefixo falhou' }
 
-    # 1b) idempotência do - RESUMO no start-sync (não duplicar)
-    if ((Get-NomeResumo '2026-11-CARLOS - ITAPITANGUI - RESUMO') -ne 'CARLOS - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO com prefixo de data' }
+    # 1b) idempotência do formato novo e do - RESUMO no start-sync (não duplicar)
+    if ((Get-NomeResumo '07-2026-11-CARLOS - ITAPITANGUI - RESUMO') -ne '07-2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'idempotência: formato novo foi alterado' }
     if ((Get-NomeResumo 'CARLOS - ITAPITANGUI - RESUMO') -ne 'CARLOS - ITAPITANGUI - RESUMO') { throw 'idempotência: duplicou RESUMO sem prefixo' }
     if ((Get-NomeResumo 'JOAO - resumo') -ne 'JOAO - resumo') { throw 'idempotência case-insensitive falhou' }
 
@@ -100,13 +120,14 @@ try {
     if ($inboxTest.Count -ne 1) { throw 'triagem: par so .json deveria ser detectado' }
     if ($null -ne $inboxTest[0].SourceTxt) { throw 'triagem: SourceTxt deveria ser nulo sem .txt' }
 
-    # 1d) Format-NomePastaProdutor: prefixo AAAA-MM-DD- (dia completo) + sufixo - RESUMO
-    if ((Format-NomePastaProdutor -Nome 'CARLOS - ITAPITANGUI' -Data '2026-11-12') -ne '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo+sufixo não garantidos' }
-    if ((Format-NomePastaProdutor -Nome '2026-11-12-CARLOS - ITAPITANGUI - RESUMO' -Data '2026-11-12') -ne '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
-    if ((Format-NomePastaProdutor -Nome '2026-11-CARLOS' -Data '2026-11-12') -ne '2026-11-12-CARLOS - RESUMO') { throw 'triagem: prefixo parcial não normalizado' }
+    # 1d) Format-NomePastaProdutor: prefixo DD-AAAA-MM- (dia primeiro) + sufixo - RESUMO
+    if ((Format-NomePastaProdutor -Nome 'CARLOS - ITAPITANGUI' -Data '2026-11-12') -ne '12-2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo DD-AAAA-MM- + sufixo não garantidos' }
+    if ((Format-NomePastaProdutor -Nome '12-2026-11-CARLOS - ITAPITANGUI - RESUMO' -Data '2026-11-12') -ne '12-2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: duplicou prefixo/sufixo' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-12-CARLOS - ITAPITANGUI - RESUMO' -Data '2026-11-12') -ne '12-2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'triagem: prefixo antigo não normalizado' }
+    if ((Format-NomePastaProdutor -Nome '2026-11-CARLOS' -Data '2026-11-12') -ne '12-2026-11-CARLOS - RESUMO') { throw 'triagem: prefixo parcial não normalizado' }
 
-    # 1e) start-sync remove prefixo de data COMPLETA (AAAA-MM-DD-) tambem
-    if ((Get-NomeResumo '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') -ne 'CARLOS - ITAPITANGUI - RESUMO') { throw 'start-sync: não removeu dia completo' }
+    # 1e) start-sync converte prefixo de data COMPLETA (AAAA-MM-DD-) para DD-AAAA-MM-
+    if ((Get-NomeResumo '2026-11-12-CARLOS - ITAPITANGUI - RESUMO') -ne '12-2026-11-CARLOS - ITAPITANGUI - RESUMO') { throw 'start-sync: não converteu dia completo para DD-AAAA-MM-' }
 
     # 1f) Remove-YamlHeader / Read-MetadadosTxt
     $yamlTxt = "---`ndata: 2026-11-12`nperiodo: manha`n---`nCorpo do relatorio"
@@ -132,7 +153,7 @@ try {
     $vb = New-Visita -Data '2026-11-12' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'ANA'
     $dias = ConvertTo-RelatorioDias -Visitas @($va, $vb)
     if ($dias[0].visitas[0].tag -ne 'A') { throw 'triagem: tag A não atribuída' }
-    if ($dias[0].visitas[1].produtor_pasta -ne '2026-11-12-ANA - RESUMO') { throw 'triagem: nome de pasta não normalizado' }
+    if ($dias[0].visitas[1].produtor_pasta -ne '12-2026-11-ANA - RESUMO') { throw 'triagem: nome de pasta não normalizado' }
 
     # 1i) limpar-screenshots: classificação por app, data e soma segura
     $AppsAmigaveis = @{ 'com.whatsapp' = 'WhatsApp'; 'com.android.chrome' = 'Chrome'; 'com.facebook.katana' = 'Facebook' }
@@ -351,7 +372,7 @@ try {
         if ($r.sincronizada -ne $false -or $null -ne $r.sincronizada_em -or $null -ne $r.drive_url) { throw 'triagem: registro novo deveria nascer sincronizada=false, sincronizada_em/drive_url nulos' }
     }
     # cache fake do Drive p/ Get-DriveFolderUrl resolver a URL sem rclone
-    $Script:DriveDirCache = @{ "$RemotoDrive/ATIVIDADE INDIVIDUAL 1/Jacupiranga" = @([PSCustomObject]@{ Name = 'JOAO - RESUMO'; ID = 'IDJOAO123' }) }
+    $Script:DriveDirCache = @{ "$RemotoDrive/ATIVIDADE INDIVIDUAL 1/Jacupiranga" = @([PSCustomObject]@{ Name = '18-2026-11-JOAO - RESUMO'; ID = 'IDJOAO123' }) }
     $procAntes = $regCiclo[0].processado_em
     $nMarc = Update-ProcessadosSyncStatus -Sincronizadas @([PSCustomObject]@{ Local = $dest1; Cidade = 'Jacupiranga'; Atividade = 'ATIVIDADE INDIVIDUAL 1'; NomeDrive = 'JOAO - RESUMO' })
     if ($nMarc -ne 1) { throw "start-sync: deveria marcar 1 visita, marcou $nMarc" }
@@ -440,6 +461,40 @@ try {
     if (($regConf | Where-Object { $_.pasta_inbox -eq $leaf1 }).sincronizada -ne $true) { throw 'conferir: save sobrescreveu sincronizada' }
     if (Test-Path -LiteralPath "$regPath.tmp") { throw 'conferir: .tmp residual' }
 
+    # 1u) varredura física da inbox: lista TUDO do Drive; _processados.json só cruza o status
+    $InboxBase = Join-Path $Tmp 'inbox3'
+    $leafNova = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Registro\ATIVIDADE INDIVIDUAL 1\2026-11-19-NOVA - RESUMO'
+    $leafPend = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Registro\ATIVIDADE INDIVIDUAL 1\2026-11-19-PENDENTE - RESUMO'
+    $leafSync = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Registro\ATIVIDADE INDIVIDUAL 2\2026-11-19-SYNC - RESUMO'
+    $leafVazia = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Registro\ATIVIDADE INDIVIDUAL 2\2026-11-19-SEM ARQUIVOS'
+    foreach ($d in @($leafNova, $leafPend, $leafSync, $leafVazia)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    Set-Content -LiteralPath (Join-Path $leafNova 'relatorio.txt') -Encoding UTF8 -Value "---`ndata: 2026-11-19`n---`nCorpo NOVA"
+    $regScan = Join-Path $InboxBase '2026\_inbox_relatorio_ater\_processados.json'
+    @(
+        [PSCustomObject]@{ pasta_inbox = $leafPend; sincronizada = $false },
+        [PSCustomObject]@{ pasta_inbox = $leafSync; sincronizada = $true }
+    ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $regScan -Encoding UTF8
+    $scan = Get-InboxPastasFisicas
+    if (@($scan).Count -ne 4) { throw "varredura física: esperava 4 pastas (inclusive vazia), obtidas $(@($scan).Count)" }
+    $stNova = $scan | Where-Object { $_.PastaInbox -eq $leafNova }
+    $stPend = $scan | Where-Object { $_.PastaInbox -eq $leafPend }
+    $stSync = $scan | Where-Object { $_.PastaInbox -eq $leafSync }
+    $stVazia = $scan | Where-Object { $_.PastaInbox -eq $leafVazia }
+    if ($stNova.Status -ne 'NOVA' -or $null -ne $stNova.Registro) { throw 'varredura física: pasta não registrada deveria ser NOVA' }
+    if ($stPend.Status -ne 'TRIADA - PENDENTE SYNC') { throw 'varredura física: registrada sem sync deveria ser TRIADA - PENDENTE SYNC' }
+    if ($stSync.Status -ne 'SINCRONIZADA') { throw 'varredura física: registrada com sync deveria ser SINCRONIZADA' }
+    if ($stVazia.Status -ne 'NOVA') { throw 'varredura física: pasta vazia também deve ser listada' }
+    if ($stPend.Registro.registro_path -ne $regScan) { throw 'varredura física: registro_path ausente no registro cruzado' }
+    # Get-InboxVisitas continua idempotente: só a NOVA com .txt vira visita
+    $visScan = Get-InboxVisitas
+    if (@($visScan).Count -ne 1 -or $visScan[0].PastaInbox -ne $leafNova) { throw 'varredura física: Get-InboxVisitas deveria retornar só a visita NOVA' }
+    # reprocessamento a partir do Drive: triagem da NOVA cria pasta padronizada + registro -> status vira PENDENTE
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas $visScan)
+    $scan2 = Get-InboxPastasFisicas
+    if (($scan2 | Where-Object { $_.PastaInbox -eq $leafNova }).Status -ne 'TRIADA - PENDENTE SYNC') { throw 'varredura física: após triagem, NOVA deveria virar TRIADA - PENDENTE SYNC' }
+    $restScan = Get-InboxVisitas
+    if (@($restScan).Count -ne 0) { throw 'varredura física: após triagem, nenhuma visita NOVA deveria restar' }
+
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
     if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
     if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }
@@ -447,22 +502,215 @@ try {
     if ((Get-PastaDestinoAudio 'gravacao renomeada.m4a' ([datetime]'2026-05-10 09:00:00')) -ne '2026-05') { throw 'audios: fallback LastWriteTime falhou' }
     if ((Get-PastaDestinoAudio '3 de xyz., 11.39 teste.m4a' ([datetime]'2026-07-03 11:39:00')) -ne '2026-07') { throw 'audios: mes invalido deveria cair no fallback' }
 
-    # 2) caminho de destino montado
-    $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '2026-11-JOAO DA SILVA' })[0]
-    if ($P.Nuvem -ne 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/Jacupiranga/JOAO DA SILVA - RESUMO') { throw "nuvem errada: $($P.Nuvem)" }
+    # 1t) trava anti-retroativo do Get-Produtores: só "- RESUMO" + .txt de relatório
+    $nomesProd = @(Get-Produtores).Produtor
+    if ($nomesProd -contains '04-2026-11-Juari') { throw 'trava: pasta sem - RESUMO não pode sincronizar (mesmo com .txt)' }
+    if ($nomesProd -contains '05-2026-11-Coicieçao E Hermes - RESUMO') { throw 'trava: pasta - RESUMO só com fotos não pode sincronizar' }
+    if ($nomesProd -contains '06-2026-11-Maria Da Graça - RESUMO') { throw 'trava: pasta - RESUMO só com coordenadas_gps.txt não pode sincronizar' }
+    if (@(Get-Produtores).Count -ne 4) { throw "trava: esperava 4 pastas válidas, obtidas $(@(Get-Produtores).Count)" }
+    $bloqueadas = @(Get-Produtores -IncluirBloqueadas | Where-Object { -not $_.Sincronizavel })
+    if ($bloqueadas.Count -ne 3) { throw "trava: contagem informativa esperava 3 bloqueadas, obtidas $($bloqueadas.Count)" }
+
+    # 2) caminho de destino montado (mesmo nome local no Drive)
+    $P = @(Get-Produtores | Where-Object { $_.Atividade -eq 'ATIVIDADE INDIVIDUAL 1' -and $_.Produtor -eq '07-2026-11-JOAO DA SILVA - RESUMO' })[0]
+    if ($P.Nuvem -ne 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/Jacupiranga/07-2026-11-JOAO DA SILVA - RESUMO') { throw "nuvem errada: $($P.Nuvem)" }
 
     # 3) ignorar vale só para aquela atividade, não para o nome do produtor
-    $Alvo = 'Jacupiranga\ATIVIDADE INDIVIDUAL 1\2026-11-JOAO DA SILVA'
+    $Alvo = 'Jacupiranga\ATIVIDADE INDIVIDUAL 1\07-2026-11-JOAO DA SILVA - RESUMO'
     Save-Ignorados @($Alvo)
     if (@(Get-Ignorados).Count -ne 1) { throw 'ignorados.json não persistiu' }
     $Ignorados = Get-Ignorados
     $Restantes = @(Get-Produtores | Where-Object { $Ignorados -notcontains $_.Relativo })
     if ($Restantes.Count -ne 3) { throw "esperado 3 pastas sincronizáveis, obtido $($Restantes.Count)" }
-    if (-not ($Restantes.Relativo -contains 'Jacupiranga\ATIVIDADE INDIVIDUAL 2\2026-11-JOAO DA SILVA')) { throw 'ATIVIDADE INDIVIDUAL 2 foi afetada' }
+    if (-not ($Restantes.Relativo -contains 'Jacupiranga\ATIVIDADE INDIVIDUAL 2\07-2026-11-JOAO DA SILVA - RESUMO')) { throw 'ATIVIDADE INDIVIDUAL 2 foi afetada' }
 
     # 4) ignorar de novo restaura a pasta
     Save-Ignorados (@(Get-Ignorados) | Where-Object { $_ -ne $Alvo })
     if (@(Get-Ignorados).Count -ne 0) { throw 'remoção do ignorado falhou' }
+
+    # 1v) mapeamento cidade local [OD] -> nome no destino [GDSA] (Pariquera-Açu -> PARIQUERA AÇU)
+    if ((Get-NomeCidadeRemoto 'Pariquera-Açu') -ne 'PARIQUERA AÇU') { throw 'mapa: Pariquera-Açu deveria virar PARIQUERA AÇU' }
+    if ((Get-NomeCidadeRemoto 'Juquia') -ne 'Juquiá') { throw 'mapa: Juquia deveria cair em Juquiá' }
+    if ((Get-NomeCidadeRemoto 'Cananéia') -ne 'Cananéia') { throw 'mapa: cidade sem mapeamento deveria manter o nome local' }
+    $pPar = Join-Path $OrigemBase 'Pariquera-Açu\ATIVIDADE INDIVIDUAL 1\2026-11-19-TESTE MAPA - RESUMO'
+    New-Item -ItemType Directory -Path $pPar -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $pPar 'relatorio.txt') -Encoding UTF8 -Value 'Corpo'
+    $pm = @(Get-Produtores -ListaCidades @('Pariquera-Açu') | Where-Object { $_.Produtor -eq '2026-11-19-TESTE MAPA - RESUMO' })[0]
+    if ($pm.Nuvem -ne 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/PARIQUERA AÇU/19-2026-11-TESTE MAPA - RESUMO') { throw "mapa: Nuvem deveria usar PARIQUERA AÇU + data DD-AAAA-MM-: $($pm.Nuvem)" }
+    if ($pm.Relativo -ne 'Pariquera-Açu\ATIVIDADE INDIVIDUAL 1\2026-11-19-TESTE MAPA - RESUMO') { throw 'mapa: Relativo (ignorados.json) deveria manter o nome local' }
+    $Script:DriveDirCache = @{ 'gdrive:TESTE/ATIVIDADE INDIVIDUAL 1/PARIQUERA AÇU' = @([PSCustomObject]@{ Name = '19-2026-11-TESTE MAPA - RESUMO'; ID = 'IDMAPA123' }) }
+    if ((Get-DriveFolderUrl -Atividade 'ATIVIDADE INDIVIDUAL 1' -Cidade 'Pariquera-Açu' -NomeDrive '19-2026-11-TESTE MAPA - RESUMO') -ne 'https://drive.google.com/drive/folders/IDMAPA123') { throw 'mapa: Get-DriveFolderUrl deveria usar o nome remoto da cidade' }
+
+    # 1w) Copy-LoteParaVisita: copia o lote p/ [OD] + GPS + manifesto + status (usado pelo fluxo e pelo [E])
+    $srcLote = Join-Path $Tmp 'srcLote'; $destLote = Join-Path $Tmp 'destLote'
+    New-Item -ItemType Directory -Path $srcLote -Force | Out-Null
+    New-Item -ItemType Directory -Path $destLote -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $srcLote 'IMG_20261107_090000.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $srcLote 'IMG_20261107_091000.jpg') | Out-Null
+    $fotosLote = @(Get-ChildItem -LiteralPath $srcLote -File | ForEach-Object {
+        [PSCustomObject]@{ Arquivo = $_; DataHora = [datetime]'2026-11-07 09:00:00'; DataStr = '2026-11-07'; HoraStr = '09:00:00'; Lat = $null; Lon = $null; TemGps = $false; LoteVisita = '2026\11\07_visita_1' }
+    })
+    $visLote = [PSCustomObject]@{ tag = 'A'; produtor_pasta = 'TESTE LOTE - RESUMO'; CaminhoDestino = $destLote }
+    $rfLote = [System.Collections.Generic.List[object]]::new()
+    $rgLote = [System.Collections.Generic.List[object]]::new()
+    $stLote = @{}
+    $mkLote = { param($tag, $modo, $n, $origem) $stLote[$tag] = [PSCustomObject]@{ Modo = $modo; Copiadas = $n; Origem = $origem } }
+    Copy-LoteParaVisita -Lote $fotosLote -Visita $visLote -Modo 'automatico' -RunFotos $rfLote -RunGps $rgLote -Marcar $mkLote
+    if (@(Get-ChildItem -LiteralPath $destLote -File -Filter '*.jpg').Count -ne 2) { throw 'lote: deveria copiar as 2 fotos do lote' }
+    if (-not (Test-Path -LiteralPath (Join-Path $destLote 'coordenadas_gps.txt'))) { throw 'lote: coordenadas_gps.txt nao gerado' }
+    if ($rfLote.Count -ne 2 -or $rgLote.Count -ne 1) { throw 'lote: manifesto de fotos/GPS incompleto' }
+    if ($stLote['A'].Copiadas -ne 2 -or $stLote['A'].Modo -ne 'automatico' -or $stLote['A'].Origem -ne $srcLote) { throw 'lote: status (marcar) nao registrado' }
+
+    # 1x) normalizacao Juquiá -> Juquia ao gravar no OneDrive (pasta com acento nao pode ser criada)
+    if ((Get-NomeCidadeOneDrive 'Juquiá') -ne 'Juquia') { throw 'normalizacao: Juquiá deveria virar Juquia' }
+    if ((Get-NomeCidadeOneDrive 'Registro') -ne 'Registro') { throw 'normalizacao: cidade sem mapeamento deveria manter o nome' }
+    $vNorm = New-Visita -Data '2026-11-19' -Cidade 'Juquiá' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta 'TESTE NORM - RESUMO' -OrigemInbox $false
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas @($vNorm))
+    if ($vNorm.CaminhoDestino -notmatch '\\Juquia\\') { throw "normalizacao: destino deveria ser Juquia: $($vNorm.CaminhoDestino)" }
+    if (Test-Path -LiteralPath (Join-Path $OneDriveBase 'Juquiá')) { throw 'normalizacao: pasta com acento nao pode ser criada no OneDrive' }
+
+    # 1y) inbox no formato novo DD-AAAA-MM- (app atualizado): data extraida do nome da pasta, sem duplicar prefixo
+    $InboxBase = Join-Path $Tmp 'inbox4'
+    $leafNovoFmt = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Juquia\ATIVIDADE INDIVIDUAL 1\07-2026-11-TESTE INBOX NOVO - RESUMO'
+    New-Item -ItemType Directory -Path $leafNovoFmt -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $leafNovoFmt 'relatorio.txt') -Encoding UTF8 -Value 'Corpo sem YAML'
+    $visNovoFmt = Get-InboxVisitas
+    if (@($visNovoFmt).Count -ne 1) { throw 'inbox novo formato: deveria detectar 1 visita' }
+    if ($visNovoFmt[0].data -ne '2026-11-07') { throw "inbox novo formato: data deveria vir do nome da pasta (2026-11-07), veio $($visNovoFmt[0].data)" }
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas $visNovoFmt)
+    if ($visNovoFmt[0].CaminhoDestino -notmatch '\\Juquia\\ATIVIDADE INDIVIDUAL 1\\07-2026-11-TESTE INBOX NOVO - RESUMO$') { throw "inbox novo formato: destino incorreto: $($visNovoFmt[0].CaminhoDestino)" }
+
+    # 1z) JSON schema 1.0 -> txt puro ANATER/Bem Viver v2 (sem YAML/Markdown/secao 10) + par YAML na inbox
+    $objRico = [PSCustomObject]@{
+        schema_version = '1.0'
+        metadados = [PSCustomObject]@{ data = '2026-11-07'; periodo = 'manha'; hora_inicio = '09:00'; hora_fim = '11:00'; cidade = 'Juquia'; atividade = 'ATIVIDADE INDIVIDUAL 1'; produtor_pasta = '07-2026-11-SO JSON RICO - RESUMO' }
+        institucional = [PSCustomObject]@{ entidade_executora = 'SA CONSULTORIA'; agente_ater = 'FERNANDO'; instrumento = 'ATER'; beneficiario = 'MARIA'; localizacao = 'Juquia'; data_etapa = '2026-11-07' }
+        relatorio = [PSCustomObject]@{ eixo_produtivo = '**Solo** corrigido.'; orientacoes_tecnicas = @('Adubar cobertura', '- Plantar direto'); eixo_social = 'Familia participante.'; orientacoes_sociais = @('Curso dia 10'); eixo_ambiental = 'APP preservada.'; orientacoes_ambientais = @('Cercar nascente') }
+        encaminhamentos = [PSCustomObject]@{ compromissos = 'NAO DEVE APARECER' }
+    }
+    $corpoJson = ConvertFrom-RelatorioJson -Json $objRico
+    foreach ($esperado in @('7. EIXO PRODUTIVO', '8. EIXO SOCIAL', '9. EIXO AMBIENTAL', 'ORIENTAÇÕES TÉCNICAS:', 'ORIENTAÇÕES SOCIAIS:', 'ORIENTAÇÕES AMBIENTAIS:', '• Adubar cobertura', '• Plantar direto', 'SA CONSULTORIA', 'Agente ATER: FERNANDO')) {
+        if ($corpoJson -notmatch [regex]::Escape($esperado)) { throw "json->txt: faltou '$esperado'" }
+    }
+    if ($corpoJson -match '\*\*|10\.|NAO DEVE APARECER') { throw 'json->txt: Markdown/secao 10 vazou no corpo' }
+    if (-not $corpoJson.Contains("Solo corrigido.`n`nORIENTAÇÕES TÉCNICAS:")) { throw 'json->txt: quebra dupla entre blocos falhou' }
+    $txt10 = "9. EIXO AMBIENTAL`n`nTexto ambiental.`n`n10. ENCAMINHAMENTOS`n`nCompromisso X.`n`n11. ANEXOS`n`nMapa."
+    $sem10 = Remove-Secao10 $txt10
+    if ($sem10 -match '10\.|Compromisso X' -or $sem10 -notmatch '11\. ANEXOS' -or $sem10 -notmatch 'Texto ambiental') { throw 'Remove-Secao10 falhou' }
+    if ((Remove-Secao10 'Sem secao dez.') -ne 'Sem secao dez.') { throw 'Remove-Secao10 alterou texto sem secao 10' }
+    # inbox so com .json rico: visita detectada com corpo montado; [OD] recebe txt limpo + anexo ATV1; inbox ganha par com YAML
+    $InboxBase = Join-Path $Tmp 'inbox5'
+    $leafJ = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Juquia\ATIVIDADE INDIVIDUAL 1\07-2026-11-SO JSON RICO - RESUMO'
+    New-Item -ItemType Directory -Path $leafJ -Force | Out-Null
+    $objRico | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $leafJ 'relatorio.json') -Encoding UTF8
+    New-Item -ItemType File -Path (Join-Path $leafJ '07-2026-11-SO JSON RICO - Mapa.png') | Out-Null
+    $visJ = Get-InboxVisitas
+    if (@($visJ).Count -ne 1 -or -not $visJ[0].TxtBody) { throw 'json rico: visita deveria ser detectada com corpo montado do JSON' }
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas $visJ)
+    $destJ = $visJ[0].CaminhoDestino
+    $txtJ = Get-Content -LiteralPath (Join-Path $destJ 'relatorio.txt') -Raw
+    if ($txtJ -match '---|10\.|\*\*' -or $txtJ -notmatch '• ') { throw 'json rico: txt [OD] deveria ser limpo (sem YAML/secao 10) e com bullets' }
+    if (Test-Path -LiteralPath (Join-Path $destJ 'relatorio.json')) { throw 'json rico: .json nao pode ir ao OneDrive' }
+    if (-not (Test-Path -LiteralPath (Join-Path $destJ '07-2026-11-SO JSON RICO - Mapa.png'))) { throw 'json rico: anexo ATV1 nao copiado' }
+    $txtInboxJ = Get-Content -LiteralPath (Join-Path $leafJ 'relatorio.txt') -Raw
+    if ($txtInboxJ -notmatch '(?s)^---\r?\n.*?data: 2026-11-07.*?\r?\n---') { throw 'json rico: .txt da inbox deveria ter bloco YAML no topo' }
+    # reparo sem .txt (destino e inbox): Repair reconstroi do JSON, sem duplicar registro
+    Remove-Item -LiteralPath (Join-Path $destJ 'relatorio.txt') -Force
+    Remove-Item -LiteralPath (Join-Path $leafJ 'relatorio.txt') -Force
+    $regJ = @(Get-ProcessadosTodos | Where-Object { $_.pasta_inbox -eq $leafJ })
+    if ($regJ.Count -ne 1) { throw 'json rico: registro unico esperado' }
+    $null = Repair-VisitaTxtAnexos -Registro $regJ[0]
+    if (-not (Test-Path -LiteralPath (Join-Path $destJ 'relatorio.txt'))) { throw 'json rico: reparo deveria reconstruir o txt a partir do JSON' }
+    if (@(Get-ProcessadosTodos | Where-Object { $_.pasta_inbox -eq $leafJ }).Count -ne 1) { throw 'json rico: reparo duplicou registro' }
+
+    # 1aa) Get-HorarioMedioLote: media em minutos + HH:mm + faixa inicial..final do lote
+    $loteHM = @(
+        [PSCustomObject]@{ DataHora = [datetime]'2026-11-07 11:40:00' },
+        [PSCustomObject]@{ DataHora = [datetime]'2026-11-07 12:00:00' }
+    )
+    $hm = Get-HorarioMedioLote -Lote $loteHM
+    if ($hm.MediaMinutos -ne 710 -or $hm.MediaHora -ne '11:50' -or $hm.Faixa -ne '11:40 as 12:00') { throw 'horario medio: media/minutos/faixa falhou' }
+    if ($null -ne (Get-HorarioMedioLote -Lote @())) { throw 'horario medio: lote vazio deveria ser nulo' }
+
+    # 1ab) Get-SugestaoTag com hora_fim null (relatorio de audio): visita unica mais proxima em <= 90 min
+    $vAudioA = [PSCustomObject]@{ tag = 'A'; periodo = $null; hora_inicio = '11:54'; hora_fim = $null }
+    $vAudioB = [PSCustomObject]@{ tag = 'B'; periodo = $null; hora_inicio = '15:00'; hora_fim = $null }
+    if ((Get-SugestaoTag -Lote $loteHM -Visitas @($vAudioA, $vAudioB)) -ne 'A') { throw 'sugestao so hora_inicio: visita mais proxima falhou' }
+    $vEmp1 = [PSCustomObject]@{ tag = 'A'; periodo = $null; hora_inicio = '11:20'; hora_fim = $null }
+    $vEmp2 = [PSCustomObject]@{ tag = 'B'; periodo = $null; hora_inicio = '12:20'; hora_fim = $null }
+    if ($null -ne (Get-SugestaoTag -Lote $loteHM -Visitas @($vEmp1, $vEmp2))) { throw 'sugestao so hora_inicio: empate equidistante deveria ser ambiguo (nulo)' }
+    $vLonge = [PSCustomObject]@{ tag = 'A'; periodo = 'manha'; hora_inicio = '11:54'; hora_fim = $null }
+    $loteCedo = @([PSCustomObject]@{ DataHora = [datetime]'2026-11-07 08:00:00' })
+    if ($null -ne (Get-SugestaoTag -Lote $loteCedo -Visitas @($vLonge))) { throw 'sugestao: fora da janela de 90 min nao pode cair no periodo generico' }
+    $vJanela = [PSCustomObject]@{ tag = 'C'; periodo = $null; hora_inicio = '12:00'; hora_fim = '13:00' }
+    if ((Get-SugestaoTag -Lote $loteHM -Visitas @($vJanela)) -ne 'C') { throw 'sugestao intervalo: margem de -30 min antes do inicio falhou' }
+    $loteFora = @([PSCustomObject]@{ DataHora = [datetime]'2026-11-07 11:20:00' })
+    if ($null -ne (Get-SugestaoTag -Lote $loteFora -Visitas @($vJanela))) { throw 'sugestao intervalo: media antes de ini-30 nao pode casar' }
+
+    # 1ac) multiplos lotes no mesmo dia (07_visita_1/07_visita_2): pastas NAO se misturam;
+    #      sugestao por horario distingue o lote certo; -Conferir restringe a pasta escolhida.
+    #      (A TUI do seletor em si exige ReadKey e nao roda neste ambiente nao-interativo.)
+    $rootMulti = Join-Path $Tmp 'syncthingMulti'
+    $d1 = Join-Path $rootMulti '2026\11\07_visita_1'; $d2 = Join-Path $rootMulti '2026\11\07_visita_2'
+    New-Item -ItemType Directory -Path $d1 -Force | Out-Null
+    New-Item -ItemType Directory -Path $d2 -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $d1 'IMG_20261107_090000.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $d1 'IMG_20261107_091000.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $d2 'IMG_20261107_114000.jpg') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $d2 'IMG_20261107_120000.jpg') | Out-Null
+    ([PSCustomObject]@{ data = '2026-11-07'; arquivos = @(
+        [PSCustomObject]@{ nome = 'IMG_20261107_090000.jpg'; hora = '09:00:00'; lat = -23.5; lon = -47.25 },
+        [PSCustomObject]@{ nome = 'IMG_20261107_091000.jpg'; hora = '09:10:00'; lat = -23.5; lon = -47.25 }) }) |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d1 '_visita.json') -Encoding UTF8
+    ([PSCustomObject]@{ data = '2026-11-07'; arquivos = @(
+        [PSCustomObject]@{ nome = 'IMG_20261107_114000.jpg'; hora = '11:40:00'; lat = -23.6; lon = -47.3 },
+        [PSCustomObject]@{ nome = 'IMG_20261107_120000.jpg'; hora = '12:00:00'; lat = -23.6; lon = -47.3 }) }) |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $d2 '_visita.json') -Encoding UTF8
+    $fm = Get-FotosCirurgico -Raizes @($rootMulti) -DatasAlvo @('2026-11-07') -Extensoes $ExtensoesFoto
+    if ($fm.Count -ne 4) { throw "multi-lote: esperava 4 fotos, obtidas $($fm.Count)" }
+    $gruposDia = @($fm | Group-Object -Property LoteVisita)
+    if ($gruposDia.Count -ne 2) { throw 'multi-lote: pastas do mesmo dia devem permanecer separadas (2 lotes)' }
+    $loteM1 = @($gruposDia | Where-Object { $_.Name -eq '2026\11\07_visita_1' } | ForEach-Object { $_.Group })
+    $loteM2 = @($gruposDia | Where-Object { $_.Name -eq '2026\11\07_visita_2' } | ForEach-Object { $_.Group })
+    $vDia = [PSCustomObject]@{ tag = 'A'; periodo = $null; hora_inicio = '11:54'; hora_fim = $null }
+    if ((Get-SugestaoTag -Lote $loteM2 -Visitas @($vDia)) -ne 'A') { throw 'multi-lote: lote de 11:40-12:00 deveria sugerir A (relatorio 11:54)' }
+    if ($null -ne (Get-SugestaoTag -Lote $loteM1 -Visitas @($vDia))) { throw 'multi-lote: lote da manha nao pode sugerir a visita de 11:54' }
+    # -Conferir: sem origem o dia inteiro e o material do seletor; com a pasta escolhida gravada
+    # em fotos_origem_sugerida, somente aquela pasta entra (nada de copiar o dia todo).
+    $destMulti = Join-Path $Tmp 'destMulti'; New-Item -ItemType Directory -Path $destMulti -Force | Out-Null
+    $regMulti = [PSCustomObject]@{ data = '2026-11-07'; destino_onedrive = $destMulti; produtor_pasta = 'TESTE MULTI - RESUMO'; fotos_origem_sugerida = $null }
+    $synctAntes = $SyncthingFotos
+    $SyncthingFotos = @($rootMulti)
+    $faltMulti = Get-FotosFaltantesVisita -Registro $regMulti
+    if (@($faltMulti).Count -ne 4) { throw 'conferir multi-lote: sem origem, o dia inteiro deveria ser listado p/ o seletor' }
+    Add-Member -InputObject $regMulti -NotePropertyName fotos_origem_sugerida -NotePropertyValue $d2 -Force
+    $faltSo2 = Get-FotosFaltantesVisita -Registro $regMulti
+    if (@($faltSo2).Count -ne 2) { throw 'conferir multi-lote: origem escolhida deveria restringir a pasta' }
+    if (@($faltSo2 | Where-Object { (Split-Path $_.Arquivo.FullName -Parent) -ne $d2 }).Count -ne 0) { throw 'conferir multi-lote: fotos de outra pasta do dia vazaram' }
+    $SyncthingFotos = $synctAntes
+
+    # 1ad) piloto -Limpar: Remove-ProcessadosPiloto tira SO os registros TESTE PILOTO do
+    #      _processados.json (atomico, preserva os demais; [] valido quando nao sobra nada)
+    $anoPiloto = Join-Path $Tmp 'inboxPiloto\2026\_inbox_relatorio_ater'
+    New-Item -ItemType Directory -Path $anoPiloto -Force | Out-Null
+    $regPiloto = Join-Path $anoPiloto '_processados.json'
+    $leafPilotoT = Join-Path $anoPiloto '11\Jacupiranga\ATIVIDADE INDIVIDUAL 1\2026-11-19-TESTE PILOTO - RESUMO'
+    @(
+        [PSCustomObject]@{ pasta_inbox = $leafPilotoT; destino_onedrive = 'C:\od\TESTE PILOTO - RESUMO'; sincronizada = $false },
+        [PSCustomObject]@{ pasta_inbox = 'G:\real\JOAO - RESUMO'; destino_onedrive = 'C:\od\JOAO - RESUMO'; sincronizada = $true }
+    ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $regPiloto -Encoding UTF8
+    $nRem = Remove-ProcessadosPiloto -PastaInboxAno $anoPiloto -PastaInbox $leafPilotoT -DestinoOD 'C:\od\TESTE PILOTO - RESUMO'
+    if ($nRem -ne 1) { throw "piloto limpar: deveria remover 1 registro, removeu $nRem" }
+    $regSobrou = @(Get-Content -LiteralPath $regPiloto -Raw | ConvertFrom-Json)
+    if ($regSobrou.Count -ne 1 -or $regSobrou[0].destino_onedrive -ne 'C:\od\JOAO - RESUMO' -or $regSobrou[0].sincronizada -ne $true) { throw 'piloto limpar: registro real nao preservado' }
+    if (Test-Path -LiteralPath "$regPiloto.tmp") { throw 'piloto limpar: .tmp residual' }
+    if ((Remove-ProcessadosPiloto -PastaInboxAno $anoPiloto -PastaInbox $leafPilotoT -DestinoOD 'C:\od\TESTE PILOTO - RESUMO') -ne 0) { throw 'piloto limpar: segunda chamada deveria remover 0 (idempotente)' }
+    # arquivo com SO o registro do piloto -> vira [] valido (leituras futuras nao quebram)
+    @([PSCustomObject]@{ pasta_inbox = $leafPilotoT; destino_onedrive = 'C:\od\TESTE PILOTO - RESUMO' }) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $regPiloto -Encoding UTF8
+    $null = Remove-ProcessadosPiloto -PastaInboxAno $anoPiloto -PastaInbox $leafPilotoT -DestinoOD 'C:\od\TESTE PILOTO - RESUMO'
+    if (@(Get-Content -LiteralPath $regPiloto -Raw | ConvertFrom-Json).Count -ne 0) { throw 'piloto limpar: arquivo sem registros deveria ser lista vazia valida' }
+    # caminho inexistente -> 0, sem criar arquivo
+    if ((Remove-ProcessadosPiloto -PastaInboxAno (Join-Path $Tmp 'naoExiste') -PastaInbox $leafPilotoT -DestinoOD 'C:\od\X') -ne 0) { throw 'piloto limpar: sem _processados.json deveria retornar 0' }
 
     $Passou = $true
 } finally {

@@ -48,7 +48,8 @@ Cruza os relatórios da inbox (`G:`) com as fotos do dia, cria as pastas no OneD
 
 * **Tela 1 (Relatórios):** Confira as visitas (`E` edita, `D` remove) → aperte **`C` / `Enter`** e confirme **`S`**.
 * Rodou de novo e **tudo já estava triado**? Ele avisa (nada de tela estranha de colar JSON) e oferece **`C`** = Conferir/reprocessar as visitas anteriores, **`M`** = colar JSON manual, **`Q`** = sair.
-* **Tela 2 (Fotos):** O script sugere o produtor pelo horário da visita → aperte **`Enter` ou `S`** para aceitar (ou digite a letra do produtor / `P` para pular / `I` foto a foto).
+* **Tela 2 (Fotos):** O script mostra a **média de horário das fotos vs o horário do relatório** e sugere o produtor (mesmo sem `hora_fim`, caso dos relatórios de áudio) → aperte **`Enter` ou `S`** para aceitar (ou digite a letra do produtor / `P` para pular / `I` foto a foto).
+* **Dia com várias pastas de fotos (`07_visita_1`, `07_visita_2`, ...)?** Aperte **`E`** para abrir o seletor: setas navegam, **`Espaço` ou `1–9`** marca, **`A`** todos/nenhum, **`O`** abre a pasta no Explorer, **`Enter`** copia **só as pastas marcadas** para a TAG escolhida. Cada linha mostra qtd de fotos, faixa, média `HH:mm`, GPS e a sugestão do relatório.
 * **Lote com fotos de vizinhos misturadas?** Aperte **`M`** (Manual): o Explorer abre a pasta de origem das fotos e as pastas dos produtores do dia no OneDrive para você copiar à mão; o registro fica marcado `fotos_modo: manual` (destacado na opção `13` do `start-sync`).
 * Cada visita confirmada é registrada em `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com **`sincronizada: false`** (os originais da inbox ficam intactos). No início, o script mostra o resumo do ano: `X triadas | Y sincronizadas | Z pendentes de envio`.
 
@@ -62,6 +63,7 @@ Faltou o TXT na pasta do produtor? Apagou fotos sem querer (ou quer manter só a
 
 * Mostra cada visita com **TXT: OK/FALTA** e **fotos: X no destino / Y registradas**.
 * **`T`** = recopia o TXT limpo + anexos da ATV 1 do Drive pessoal `[GD]` · **`F`** = lista as fotos que faltam e pergunta se copia (**S/N** — `N` mantém como está, sem forçar fotos a mais) · **`A`** = ambos · **`P`** = pular · **`Q`** = sair.
+* **Dia com 2+ pastas de fotos e sem origem registrada?** Ao pedir fotos (`F`/`A`), o seletor de lotes abre para você marcar **qual pasta pertence àquela visita** — a escolha é gravada em `fotos_origem_sugerida` no `_processados.json` e as pastas do dia **nunca são misturadas** automaticamente.
 
 ### Passo 3 — Enviar para o Google Drive da Consultoria (`start-sync.ps1`)
 
@@ -85,6 +87,17 @@ Copia as pastas prontas do OneDrive para o Drive compartilhado da SA Consultoria
 .\limpar-screenshots.ps1   # Organiza prints por aplicativo, apaga lockscreen e remove pastas vazias
 .\self-check.ps1           # Valida se todos os scripts estão funcionando sem erros
 ```
+
+### Teste Ponta a Ponta Real (piloto) e Limpeza dos Rastros
+
+```powershell
+.\piloto-ponta-a-ponta.ps1          # Cria visita "TESTE PILOTO" e valida inbox -> triagem -> OneDrive -> Drive
+.\piloto-ponta-a-ponta.ps1 -Limpar  # Remove a visita de teste do Drive, do OneDrive e da inbox
+.\triagem-campo.ps1 -Conferir       # Confere/reprocessa visitas reais sem duplicar registros
+```
+
+* O piloto exige o remote `gdrive_saconsult` configurado e que **não exista** visita TESTE PILOTO anterior (rode `-Limpar` antes de repetir).
+* Manifestos em `runs\` e `triagem-log.txt` são auditoria permanente — o `-Limpar` **não** os apaga.
 
 ### Atalhos Úteis de Simulação (`-WhatIf` não altera nada)
 

@@ -41,7 +41,8 @@ $LogDir                 = Join-Path $PSScriptRoot "logs"
 $NomeRemoto             = "gdrive_saconsult"
 $RemotoDrive            = "${NomeRemoto}:VALE DO RIBEIRA/FERNANDO"
 $IgnoradosFile          = Join-Path $PSScriptRoot "ignorados.json"
-$Cidades                = @("Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro")
+$Cidades                = @("Barra do Turvo", "Cananéia", "Jacupiranga", "Juquia", "Pariquera-Açu", "Registro")
+$CidadesRemoto          = @{ 'Pariquera-Açu' = 'PARIQUERA AÇU'; 'Juquia' = 'Juquiá' }   # nome local -> nome no destino [GDSA]
 $Atividades             = @("ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3",
                             "ATIVIDADE INDIVIDUAL 4", "ATIVIDADE INDIVIDUAL 5", "ATIVIDADE INDIVIDUAL 6", "PROJETO PRODUTIVO")
 $RcloneFlags            = @("--update", "--exclude", "*.json", "--transfers=4", "--checkers=8",
@@ -63,15 +64,38 @@ foreach ($arq in @('triagem-campo.ps1', 'start-sync.ps1')) {
 $DataPiloto   = (Get-Date -Format 'yyyy-MM-dd')
 $CidadePiloto = 'Jacupiranga'
 $AtivPiloto   = 'ATIVIDADE INDIVIDUAL 1'
-$LeafPiloto   = "$DataPiloto-TESTE PILOTO - RESUMO"
-$NomeDrive    = 'TESTE PILOTO - RESUMO'
+$LeafPiloto   = "$DataPiloto-TESTE PILOTO - RESUMO"   # inbox: formato do app (AAAA-MM-DD-)
+$LeafOD       = "$($DataPiloto.Substring(8, 2))-$($DataPiloto.Substring(0, 7))-TESTE PILOTO - RESUMO"   # [OD]/[GDSA]: DD-AAAA-MM-
+$NomeDrive    = $LeafOD
 $InboxLeaf    = Join-Path $InboxBase "$(Get-Date -Format 'yyyy')\_inbox_relatorio_ater\$(Get-Date -Format 'MM')\$CidadePiloto\$AtivPiloto\$LeafPiloto"
-$OneDriveLeaf = Join-Path $OneDriveBase "$CidadePiloto\$AtivPiloto\$LeafPiloto"
-$NuvemPiloto  = "$RemotoDrive/$AtivPiloto/$CidadePiloto/$NomeDrive"
+$OneDriveLeaf = Join-Path $OneDriveBase "$CidadePiloto\$AtivPiloto\$LeafOD"
+$NuvemPiloto  = "$RemotoDrive/$AtivPiloto/$(Get-NomeCidadeRemoto $CidadePiloto)/$NomeDrive"
 
 function Assert([bool]$Cond, [string]$Msg) {
     if (-not $Cond) { throw "[FALHOU] $Msg" }
     Write-Host "  [OK] $Msg" -ForegroundColor Green
+}
+
+# Remove do _processados.json do ano os registros da visita TESTE PILOTO (casa pasta_inbox OU
+# destino_onedrive, sem barra final, case-insensitive). Preserva os demais registros; gravacao
+# atomica (.tmp + Move). Retorna quantos removeu. Nunca toca em runs\ nem triagem-log.txt.
+function Remove-ProcessadosPiloto {
+    param([string]$PastaInboxAno, [string]$PastaInbox, [string]$DestinoOD)
+    $regPath = Join-Path $PastaInboxAno '_processados.json'
+    if (-not (Test-Path -LiteralPath $regPath)) { return 0 }
+    try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return 0 }
+    $ficam = @($regs | Where-Object {
+        (([string](Get-PropValue $_ 'pasta_inbox')).TrimEnd('\') -ine $PastaInbox.TrimEnd('\')) -and
+        (([string](Get-PropValue $_ 'destino_onedrive')).TrimEnd('\') -ine $DestinoOD.TrimEnd('\'))
+    })
+    $removidos = $regs.Count - $ficam.Count
+    if ($removidos -gt 0) {
+        $json = if ($ficam.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($ficam) -Depth 10 }
+        $tmp = "$regPath.tmp"
+        Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8
+        Move-Item -LiteralPath $tmp -Destination $regPath -Force
+    }
+    return $removidos
 }
 
 # ================= LIMPEZA (-Limpar) =================
@@ -88,6 +112,10 @@ if ($Limpar) {
             Write-Host "  [REMOVIDO] inbox: $p" -ForegroundColor Yellow
         }
     }
+    # registro da visita de teste no _processados.json do ano (a Etapa 1 registra; sem isso
+    # sobraria entrada orfa TESTE PILOTO). Demais registros do ano ficam intactos.
+    $nReg = Remove-ProcessadosPiloto -PastaInboxAno (Join-Path $InboxBase "$(Get-Date -Format 'yyyy')\_inbox_relatorio_ater") -PastaInbox $InboxLeaf -DestinoOD $OneDriveLeaf
+    if ($nReg -gt 0) { Write-Host "  [REMOVIDO] $nReg registro(s) TESTE PILOTO do _processados.json" -ForegroundColor Yellow }
     # remove pastas vazias criadas pelo piloto (sobe ate G:\Meu Drive, nunca remove a raiz)
     $dir = Split-Path $InboxLeaf -Parent
     while ($dir.StartsWith($InboxBase) -and $dir -ne $InboxBase -and (Test-Path -LiteralPath $dir) -and
@@ -146,14 +174,14 @@ Assert ($VisitasPiloto.Count -eq 1) "inbox detectou a visita de teste (total na 
 # piloto controlado: segue somente com a visita de teste (equivale a remover as demais na TUI)
 $RelatorioDias = ConvertTo-RelatorioDias -Visitas $VisitasPiloto
 Assert ($RelatorioDias[0].visitas[0].tag -eq 'A') 'tag A atribuida'
-Assert ($RelatorioDias[0].visitas[0].produtor_pasta -eq $LeafPiloto) "nome normalizado: $LeafPiloto"
+Assert ($RelatorioDias[0].visitas[0].produtor_pasta -eq $LeafOD) "nome normalizado: $LeafOD"
 
 $PastasCriadas = Invoke-CriarPastasEArquivar -RelatorioDias $RelatorioDias
 Assert (Test-Path -LiteralPath $OneDriveLeaf) 'pasta criada no OneDrive'
 $txtDest = Join-Path $OneDriveLeaf 'relatorio.txt'
 Assert ((Test-Path -LiteralPath $txtDest) -and ((Get-Content -LiteralPath $txtDest -Raw) -notmatch '(?s)^\s*---')) '.txt limpo gravado (sem YAML)'
-Assert (Test-Path -LiteralPath (Join-Path $OneDriveLeaf 'relatorio.json')) '.json copiado para o OneDrive'
-Assert (-not (Test-Path -LiteralPath (Join-Path $InboxLeaf 'relatorio.txt'))) 'originais movidos para _processados (inbox limpa)'
+Assert (-not (Test-Path -LiteralPath (Join-Path $OneDriveLeaf 'relatorio.json'))) '.json NAO vai para o OneDrive (fica so na inbox)'
+Assert ((Test-Path -LiteralPath (Join-Path $InboxLeaf 'relatorio.txt')) -and (Test-Path -LiteralPath (Join-Path $InboxLeaf 'relatorio.json'))) 'originais intactos na inbox (.txt + .json)'
 
 # ================= ETAPA 2: fotos do dia (indexacao real das raizes) =================
 Write-Host "`n[2] Indexando fotos do Syncthing (raizes reais, dedup por nome)..." -ForegroundColor Cyan
@@ -206,7 +234,7 @@ Write-TriagemRun -Registro ([PSCustomObject]@{
 
 # ================= ETAPA 3: start-sync (dry-run -> real -> manifesto URL) =================
 Write-Host "`n[3] start-sync: dry-run da pasta de teste..." -ForegroundColor Cyan
-Assert ((Get-NomeResumo $LeafPiloto) -eq $NomeDrive) "nome no Drive: $NomeDrive (prefixo removido, sem duplicar RESUMO)"
+Assert ((Get-NomeResumo $LeafPiloto) -eq $NomeDrive) "nome no Drive: $NomeDrive (data DD-AAAA-MM-, mesmo nome local, sem duplicar RESUMO)"
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
 $LogFilePiloto = Join-Path $LogDir ("sync_piloto_{0}.log" -f (Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'))
 $Dry = Invoke-RcloneCopy -Local $OneDriveLeaf -Nuvem $NuvemPiloto -Simulacao $true -LogFile $LogFilePiloto

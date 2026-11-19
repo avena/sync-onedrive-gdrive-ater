@@ -16,9 +16,11 @@
 .PARAMETER Colar
     Forca colagem do JSON no terminal (ignora inbox e visitas.json).
 .PARAMETER Conferir
-    Lista as visitas JA processadas (_processados.json), confere TXT e fotos no
-    destino [OD] e permite reprocessar: recopiar TXT/anexos da inbox [GD] e/ou
-    copiar apenas as fotos faltantes (S/N; nunca apaga nem força fotos a mais).
+    Varre FISICAMENTE a inbox do Drive (todas as pastas, com status NOVA /
+    TRIADA - PENDENTE SYNC / SINCRONIZADA cruzado do _processados.json), confere
+    TXT e fotos no destino [OD] e permite reprocessar qualquer pasta: recopiar
+    TXT/anexos da inbox [GD], triar pastas NOVA e/ou copiar apenas as fotos
+    faltantes (S/N; nunca apaga nem força fotos a mais).
 .PARAMETER VisitasJson
     Caminho do arquivo de visitas manual (padrao: visitas.json ao lado do script).
 .NOTES
@@ -50,9 +52,13 @@ $ExtensoesFoto          = @(".jpg", ".jpeg", ".png", ".heic", ".mp4")
 $LogFile                = Join-Path $PSScriptRoot "triagem-log.txt"
 $RunsDir                = Join-Path $PSScriptRoot "runs"                   # permanente: NUNCA apagar
 
+# Nomes EXATOS das pastas locais [OD] (menu de edicao). Padrao do usuario: "Juquia" SEM acento.
 $Cidades = @(
-    "Barra do Turvo", "Cananéia", "Jacupiranga", "Juquiá", "Pariquera-Açu", "Registro"
+    "Barra do Turvo", "Cananéia", "Jacupiranga", "Juquia", "Pariquera-Açu", "Registro"
 )
+# A inbox [GD] e o OneDrive usam "Juquia" (sem acento). O mapa e rede de seguranca p/
+# relatorios/metadados antigos que ainda tragam "Juquiá" com acento. Demais cidades: mesmo nome.
+$CidadesOneDrive = @{ 'Juquiá' = 'Juquia' }
 $Atividades = @(
     "ATIVIDADE INDIVIDUAL 1", "ATIVIDADE INDIVIDUAL 2", "ATIVIDADE INDIVIDUAL 3",
     "ATIVIDADE INDIVIDUAL 4", "ATIVIDADE INDIVIDUAL 5", "ATIVIDADE INDIVIDUAL 6",
@@ -96,13 +102,21 @@ function Add-SufixoResumo {
     return "$Nome - RESUMO"
 }
 
-# Nome da pasta = prefixo AAAA-MM-DD- (dia completo) + NOME + - RESUMO.
+# Nome da cidade no destino [OD]: normaliza "Juquiá" (inbox/relatorios) -> "Juquia" (pasta local padrao)
+function Get-NomeCidadeOneDrive {
+    param([string]$Cidade)
+    if ($CidadesOneDrive.ContainsKey($Cidade)) { return $CidadesOneDrive[$Cidade] }
+    return $Cidade
+}
+
+# Nome da pasta = prefixo DD-AAAA-MM- (dia primeiro, p/ ordenar por dia dentro da atividade)
+# + NOME + - RESUMO. Remove prefixo antigo (AAAA-MM-DD-/AAAA-MM-) ou novo (DD-AAAA-MM-) antes.
 function Format-NomePastaProdutor {
     param([string]$Nome, [string]$Data)
     if ([string]::IsNullOrWhiteSpace($Nome)) { return $Nome }
     $Nome = $Nome.Trim()
-    $Nome = $Nome -replace '^\d{4}-\d{2}(-\d{2})?-', ''
-    if ($Data -match '^\d{4}-\d{2}-\d{2}$') { $Nome = "$Data-$Nome" }
+    $Nome = $Nome -replace '^(\d{4}-\d{2}(-\d{2})?-|\d{2}-\d{4}-\d{2}-)', ''
+    if ($Data -match '^\d{4}-\d{2}-\d{2}$') { $Nome = "$($Data.Substring(8, 2))-$($Data.Substring(0, 7))-$Nome" }
     return Add-SufixoResumo $Nome
 }
 
@@ -145,6 +159,99 @@ function Read-MetadadosTxt {
     return @{ Campos = $campos; Body = $body }
 }
 
+# Texto puro p/ o .txt final: sem Markdown (**, *, #, crases); bullets '- '/'* ' viram '• '.
+function Remove-MarkdownBasico {
+    param([string]$Texto)
+    if ($null -eq $Texto) { return $null }
+    $t = $Texto -replace '(?m)^\s{0,3}#{1,6}\s*', ''
+    $t = $t -replace '(?m)^\s*[-*]\s+', '• '
+    return ($t -replace '\*|__|`', '')
+}
+
+# Remove a secao 10 (encaminhamentos/compromissos) do corpo: do titulo "10. ..." ate a
+# proxima secao numerada ou fim do texto. Sem secao 10 -> devolve o texto intacto.
+function Remove-Secao10 {
+    param([string]$Texto)
+    if ($null -eq $Texto) { return $null }
+    $linhas = @($Texto -split "\r?\n")
+    $ini = -1; $fim = $linhas.Count
+    for ($i = 0; $i -lt $linhas.Count; $i++) {
+        if ($ini -lt 0 -and $linhas[$i] -match '^\s*10\.\s') { $ini = $i; continue }
+        if ($ini -ge 0 -and $linhas[$i] -match '^\s*\d+\.\s') { $fim = $i; break }
+    }
+    if ($ini -lt 0) { return $Texto }
+    $antes = if ($ini -gt 0) { $linhas[0..($ini - 1)] } else { @() }
+    $depois = if ($fim -lt $linhas.Count) { $linhas[$fim..($linhas.Count - 1)] } else { @() }
+    return (@($antes) + @($depois) -join "`n").TrimEnd()
+}
+
+# Monta o corpo do relatorio (texto puro, padrao ANATER/Bem Viver v2) do JSON schema 1.0:
+# cabecalho institucional + secoes 7/8/9 com orientacoes em '• ', quebra dupla entre blocos.
+# Sem YAML, sem Markdown e SEM secao 10 (encaminhamentos ficam apenas no JSON).
+function ConvertFrom-RelatorioJson {
+    param($Json)   # caminho do .json ou objeto ja parseado
+    $obj = if ($Json -is [string]) { try { Get-Content -LiteralPath $Json -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null } } else { $Json }
+    if ($null -eq $obj) { return $null }
+    $inst = Get-PropValue $obj 'institucional'
+    $rel = Get-PropValue $obj 'relatorio'
+    if (-not $inst -and -not $rel) { return $null }
+    $blocos = [System.Collections.Generic.List[string]]::new()
+    $cab = [System.Collections.Generic.List[string]]::new()
+    $ent = [string](Get-PropValue $inst 'entidade_executora')
+    if ($ent) { $cab.Add($ent) }
+    foreach ($par in @(@('Agente ATER', 'agente_ater'), @('Instrumento', 'instrumento'), @('Beneficiário', 'beneficiario'), @('Localização', 'localizacao'), @('Data da etapa', 'data_etapa'))) {
+        $v = [string](Get-PropValue $inst $par[1])
+        if ($v) { $cab.Add("$($par[0]): $v") }
+    }
+    if ($cab.Count -gt 0) { $blocos.Add(($cab -join "`n")) }
+    foreach ($eixo in @(@('7. EIXO PRODUTIVO', 'eixo_produtivo', 'ORIENTAÇÕES TÉCNICAS:', 'orientacoes_tecnicas'),
+                        @('8. EIXO SOCIAL', 'eixo_social', 'ORIENTAÇÕES SOCIAIS:', 'orientacoes_sociais'),
+                        @('9. EIXO AMBIENTAL', 'eixo_ambiental', 'ORIENTAÇÕES AMBIENTAIS:', 'orientacoes_ambientais'))) {
+        $texto = [string](Get-PropValue $rel $eixo[1])
+        $itens = @(Get-PropValue $rel $eixo[3])
+        if (-not $texto -and $itens.Count -eq 0) { continue }
+        $blocos.Add($eixo[0])
+        if ($texto) { $blocos.Add($texto) }
+        if ($itens.Count -gt 0) {
+            $blocos.Add($eixo[2])
+            foreach ($it in $itens) {
+                $s = [string]$it
+                if (-not $s.Trim()) { continue }
+                $s = Remove-MarkdownBasico ($s -replace '^\s*[-*]\s+', '')   # remove bullet Markdown antes do '• ' (sem duplicar)
+                $blocos.Add("• $s")
+            }
+        }
+    }
+    if ($blocos.Count -eq 0) { return $null }
+    return (Remove-MarkdownBasico ($blocos -join "`n`n"))
+}
+
+# Grava o .txt do par na inbox [GD] com bloco YAML no topo, montado do JSON (schema 1.0).
+# ADITIVO: so cria se o .txt nao existir; nunca sobrescreve/apaga originais. Atomico (.tmp + Move).
+function Write-TxtInboxDoJson {
+    param([string]$JsonPath)
+    $txtPath = Join-Path (Split-Path $JsonPath -Parent) ([System.IO.Path]::GetFileNameWithoutExtension($JsonPath) + '.txt')
+    if (Test-Path -LiteralPath $txtPath) { return $txtPath }
+    try { $obj = Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+    $body = ConvertFrom-RelatorioJson -Json $obj
+    if (-not $body) { return $null }
+    $meta = Get-PropValue $obj 'metadados'
+    if (-not $meta) { $meta = $obj }
+    $linhas = [System.Collections.Generic.List[string]]::new()
+    $linhas.Add('---')
+    foreach ($k in @('data', 'periodo', 'hora_inicio', 'hora_fim', 'cidade', 'atividade', 'produtor_pasta')) {
+        $val = [string](Get-PropValue $meta $k)
+        if (-not $val) { $val = 'null' }
+        $linhas.Add("${k}: $val")
+    }
+    $linhas.Add('---')
+    $tmp = "$txtPath.tmp"
+    Set-Content -LiteralPath $tmp -Value (($linhas -join "`n") + "`n" + $body) -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $txtPath -Force
+    Write-TriagemLog "MONTADO TXT [GD] do JSON: $txtPath"
+    return $txtPath
+}
+
 function New-Visita {
     param($Data, $Periodo, $HoraInicio, $HoraFim, $Cidade, $Atividade, $ProdutorPasta,
           $SourceTxt, $SourceJson, $TxtBody, $OrigemInbox, $Ano, $MM, $LeafName, $PastaInbox)
@@ -157,81 +264,117 @@ function New-Visita {
     }
 }
 
-# ================= FONTE PRIMARIA: INBOX ESPELHADA =================
-function Get-InboxVisitas {
-    $visitas = [System.Collections.Generic.List[object]]::new()
+# ================= FONTE PRIMARIA: INBOX ESPELHADA (VARREDURA FISICA DO DRIVE) =================
+# Lista FISICAMENTE todas as pastas <AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<Atividade>\<Produtor>,
+# independentemente de ja constarem em _processados.json. O JSON serve APENAS para cruzar o status:
+#   NOVA | TRIADA - PENDENTE SYNC | SINCRONIZADA. O registro (se houver) vai junto, com registro_path.
+function Get-InboxPastasFisicas {
+    $pastas = [System.Collections.Generic.List[object]]::new()
     if (-not (Test-Path -LiteralPath $InboxBase)) { return , @() }
-
-    $anos = @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })
-    foreach ($ano in $anos) {
-        $inbox = Join-Path $ano.FullName "_inbox_relatorio_ater"
+    foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' } | Sort-Object Name)) {
+        $inbox = Join-Path $ano.FullName '_inbox_relatorio_ater'
         if (-not (Test-Path -LiteralPath $inbox)) { continue }
-        # Idempotencia: pastas ja registradas em _processados.json nao voltam a lista.
-        # (A pasta legada _processados\ ja fica de fora: o filtro de meses so aceita ^\d{2}$.)
-        $jaProcessados = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        $regs = @{}
         $regPath = Join-Path $inbox '_processados.json'
         if (Test-Path -LiteralPath $regPath) {
             try {
                 foreach ($r in @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json)) {
                     $pi = [string](Get-PropValue $r 'pasta_inbox')
-                    if ($pi) { [void]$jaProcessados.Add($pi.TrimEnd('\')) }
+                    if ($pi) {
+                        Add-Member -InputObject $r -NotePropertyName registro_path -NotePropertyValue $regPath -Force
+                        $regs[$pi.TrimEnd('\')] = $r   # ultimo registro vence (reprocessamento faz append)
+                    }
                 }
             } catch { }
         }
-        $meses = @(Get-ChildItem -LiteralPath $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{2}$' })
-        foreach ($mm in $meses) {
-            foreach ($cid in @(Get-ChildItem -LiteralPath $mm.FullName -Directory -ErrorAction SilentlyContinue)) {
-                foreach ($ativ in @(Get-ChildItem -LiteralPath $cid.FullName -Directory -ErrorAction SilentlyContinue)) {
-                    foreach ($prod in @(Get-ChildItem -LiteralPath $ativ.FullName -Directory -ErrorAction SilentlyContinue)) {
-                        if ($jaProcessados.Contains($prod.FullName.TrimEnd('\'))) { continue }
-                        $leaf = $prod.Name
-                        $arqs = @(Get-ChildItem -LiteralPath $prod.FullName -File -ErrorAction SilentlyContinue |
-                            Where-Object { $_.Extension -in @('.txt', '.json') })
-                        if ($arqs.Count -eq 0) { continue }
-                        $grupos = @($arqs | Group-Object { [System.IO.Path]::GetFileNameWithoutExtension($_.Name) })
-                        foreach ($g in $grupos) {
-                            $txt  = $g.Group | Where-Object { $_.Extension -eq '.txt' }  | Select-Object -First 1
-                            $json = $g.Group | Where-Object { $_.Extension -eq '.json' } | Select-Object -First 1
-
-                            $data = $null; $periodo = $null; $hi = $null; $hf = $null
-                            $cidade = $cid.Name; $atividade = $ativ.Name; $pasta = $leaf; $body = $null
-
-                            if ($json) {
-                                $m = Read-MetadadosJson -Path $json.FullName
-                                if ($m) {
-                                    if ($m.data)           { $data = $m.data }
-                                    if ($m.periodo)        { $periodo = $m.periodo }
-                                    if ($m.hora_inicio)    { $hi = $m.hora_inicio }
-                                    if ($m.hora_fim)       { $hf = $m.hora_fim }
-                                    if ($m.cidade)         { $cidade = $m.cidade }
-                                    if ($m.atividade)      { $atividade = $m.atividade }
-                                    if ($m.produtor_pasta) { $pasta = $m.produtor_pasta }
-                                }
-                            }
-                            if ($txt) {
-                                $t = Read-MetadadosTxt -Path $txt.FullName
-                                $body = $t.Body; $c = $t.Campos
-                                if (-not $data -and $c['data'])       { $data = $c['data'] }
-                                if (-not $periodo -and $c['periodo']) { $periodo = $c['periodo'] }
-                                if (-not $hi -and $c['hora_inicio'])  { $hi = $c['hora_inicio'] }
-                                if (-not $hf -and $c['hora_fim'])     { $hf = $c['hora_fim'] }
-                                if ($c['cidade'])         { $cidade = $c['cidade'] }
-                                if ($c['atividade'])      { $atividade = $c['atividade'] }
-                                if ($c['produtor_pasta']) { $pasta = $c['produtor_pasta'] }
-                            }
-                            if (-not $data -and $leaf -match '^(\d{4}-\d{2}-\d{2})') { $data = $Matches[1] }
-                            if (-not $data) { continue }
-
-                            # par pode ser so .txt ou so .json: $null.FullName quebraria no StrictMode
-                            $visitas.Add((New-Visita -Data $data -Periodo $periodo -HoraInicio $hi -HoraFim $hf `
-                                -Cidade $cidade -Atividade $atividade -ProdutorPasta $pasta `
-                                -SourceTxt $(if ($txt) { $txt.FullName } else { $null }) `
-                                -SourceJson $(if ($json) { $json.FullName } else { $null }) -TxtBody $body `
-                                -OrigemInbox $true -Ano $ano.Name -MM $mm.Name -LeafName $leaf -PastaInbox $prod.FullName))
-                        }
+        # (A pasta legada _processados\ ja fica de fora: o filtro de meses so aceita ^\d{2}$.)
+        foreach ($mm in @(Get-ChildItem -LiteralPath $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{2}$' } | Sort-Object Name)) {
+            foreach ($cid in @(Get-ChildItem -LiteralPath $mm.FullName -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                foreach ($ativ in @(Get-ChildItem -LiteralPath $cid.FullName -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                    foreach ($prod in @(Get-ChildItem -LiteralPath $ativ.FullName -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                        $r = $regs[$prod.FullName.TrimEnd('\')]
+                        $status = if (-not $r) { 'NOVA' }
+                                  elseif (Get-PropValue $r 'sincronizada') { 'SINCRONIZADA' }
+                                  else { 'TRIADA - PENDENTE SYNC' }
+                        $pastas.Add([PSCustomObject]@{
+                            Ano = $ano.Name; MM = $mm.Name; Cidade = $cid.Name; Atividade = $ativ.Name
+                            Produtor = $prod.Name; PastaInbox = $prod.FullName; Status = $status; Registro = $r
+                        })
                     }
                 }
             }
+        }
+    }
+    return , @($pastas)
+}
+
+# Exibicao da varredura fisica: Mes | Cidade | Atividade | Produtor + status + Origem [GD] completa.
+function Show-InboxFisico {
+    param([array]$Pastas)
+    $ultGrupo = ''
+    foreach ($p in @($Pastas | Sort-Object Ano, MM, Cidade, Atividade, Produtor)) {
+        $grupo = "$($p.Ano)\$($p.MM) | $($p.Cidade) | $($p.Atividade)"
+        if ($grupo -ne $ultGrupo) {
+            Write-Host "`n  $grupo" -ForegroundColor Cyan
+            $ultGrupo = $grupo
+        }
+        $cor = switch ($p.Status) { 'NOVA' { 'Green' } 'SINCRONIZADA' { 'DarkGreen' } default { 'Yellow' } }
+        Write-Host "   [$($p.Status)] $($p.MM) | $($p.Cidade) | $($p.Atividade) | $($p.Produtor)" -ForegroundColor $cor
+        Write-Host "      Origem [GD]: $($p.PastaInbox)" -ForegroundColor DarkGray
+    }
+}
+
+# Visitas NOVAS (idempotencia): so pastas fisicas ainda nao registradas em _processados.json.
+function Get-InboxVisitas {
+    $visitas = [System.Collections.Generic.List[object]]::new()
+    foreach ($p in (Get-InboxPastasFisicas)) {
+        if ($p.Status -ne 'NOVA') { continue }
+        $leaf = $p.Produtor
+        $arqs = @(Get-ChildItem -LiteralPath $p.PastaInbox -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.txt', '.json') })
+        if ($arqs.Count -eq 0) { continue }
+        $grupos = @($arqs | Group-Object { [System.IO.Path]::GetFileNameWithoutExtension($_.Name) })
+        foreach ($g in $grupos) {
+            $txt  = $g.Group | Where-Object { $_.Extension -eq '.txt' }  | Select-Object -First 1
+            $json = $g.Group | Where-Object { $_.Extension -eq '.json' } | Select-Object -First 1
+
+            $data = $null; $periodo = $null; $hi = $null; $hf = $null
+            $cidade = $p.Cidade; $atividade = $p.Atividade; $pasta = $leaf; $body = $null
+
+            if ($json) {
+                $m = Read-MetadadosJson -Path $json.FullName
+                if ($m) {
+                    if ($m.data)           { $data = $m.data }
+                    if ($m.periodo)        { $periodo = $m.periodo }
+                    if ($m.hora_inicio)    { $hi = $m.hora_inicio }
+                    if ($m.hora_fim)       { $hf = $m.hora_fim }
+                    if ($m.cidade)         { $cidade = $m.cidade }
+                    if ($m.atividade)      { $atividade = $m.atividade }
+                    if ($m.produtor_pasta) { $pasta = $m.produtor_pasta }
+                }
+            }
+            if ($txt) {
+                $t = Read-MetadadosTxt -Path $txt.FullName
+                $body = $t.Body; $c = $t.Campos
+                if (-not $data -and $c['data'])       { $data = $c['data'] }
+                if (-not $periodo -and $c['periodo']) { $periodo = $c['periodo'] }
+                if (-not $hi -and $c['hora_inicio'])  { $hi = $c['hora_inicio'] }
+                if (-not $hf -and $c['hora_fim'])     { $hf = $c['hora_fim'] }
+                if ($c['cidade'])         { $cidade = $c['cidade'] }
+                if ($c['atividade'])      { $atividade = $c['atividade'] }
+                if ($c['produtor_pasta']) { $pasta = $c['produtor_pasta'] }
+            }
+            if (-not $body -and $json) { $body = ConvertFrom-RelatorioJson -Json $json.FullName }   # inbox sem .txt: corpo montado do JSON
+            if (-not $data -and $leaf -match '^(\d{4}-\d{2}-\d{2})') { $data = $Matches[1] }
+            if (-not $data -and $leaf -match '^(\d{2})-(\d{4}-\d{2})') { $data = "$($Matches[2])-$($Matches[1])" }   # formato novo DD-AAAA-MM-
+            if (-not $data) { continue }
+
+            # par pode ser so .txt ou so .json: $null.FullName quebraria no StrictMode
+            $visitas.Add((New-Visita -Data $data -Periodo $periodo -HoraInicio $hi -HoraFim $hf `
+                -Cidade $cidade -Atividade $atividade -ProdutorPasta $pasta `
+                -SourceTxt $(if ($txt) { $txt.FullName } else { $null }) `
+                -SourceJson $(if ($json) { $json.FullName } else { $null }) -TxtBody $body `
+                -OrigemInbox $true -Ano $p.Ano -MM $p.MM -LeafName $leaf -PastaInbox $p.PastaInbox))
         }
     }
     return , @($visitas)
@@ -525,24 +668,64 @@ function ConvertTo-Minutos {
     return $null
 }
 
-# Retorna a TAG se um unico produtor do dia casa com o horario medio do lote; senao $null
+# Horario medio do lote (minutos desde 00:00 + HH:mm) e faixa inicial..final das fotos.
+function Get-HorarioMedioLote {
+    param([array]$Lote)
+    $l = @($Lote | Sort-Object DataHora)
+    if ($l.Count -eq 0) { return $null }
+    $media = ($l | ForEach-Object { $_.DataHora.Hour * 60 + $_.DataHora.Minute } | Measure-Object -Average).Average
+    $h = [int][Math]::Floor($media / 60); $m = [int][Math]::Round($media - $h * 60)
+    if ($m -eq 60) { $h++; $m = 0 }
+    return @{
+        MediaMinutos = [double]$media
+        MediaHora    = '{0:D2}:{1:D2}' -f $h, $m
+        Faixa        = "$($l[0].DataHora.ToString('HH:mm')) as $($l[-1].DataHora.ToString('HH:mm'))"
+    }
+}
+
+# Sugestao por proximidade: |media - hora_inicio| <= JanelaMin. Empate na menor distancia
+# (2 visitas equidistantes) = ambiguo -> $null. Usado quando hora_fim e null/vazio (audio).
+function Get-SugestaoTagProximidade {
+    param([double]$MediaMinutos, $Visitas, [int]$JanelaMin = 90)
+    $cand = [System.Collections.Generic.List[object]]::new()
+    foreach ($v in $Visitas) {
+        $ini = ConvertTo-Minutos ([string]$v.hora_inicio)
+        if ($null -eq $ini) { continue }
+        $diff = [Math]::Abs($MediaMinutos - $ini)
+        if ($diff -le $JanelaMin) { $cand.Add([PSCustomObject]@{ Visita = $v; Diff = $diff }) }
+    }
+    if ($cand.Count -eq 0) { return $null }
+    $menor = ($cand | Measure-Object -Property Diff -Minimum).Minimum
+    $melhores = @($cand | Where-Object { $_.Diff -eq $menor })
+    if ($melhores.Count -ne 1) { return $null }
+    return $melhores[0].Visita.tag
+}
+
+# Retorna a TAG se um unico produtor do dia casa com o horario medio do lote; senao $null.
+# inicio+fim: media dentro de [ini-30, fim+30]. So inicio (hora_fim null): visita unica mais
+# proxima em <= 90 min. Periodo generico (manha/tarde) so como fallback sem hora_inicio.
 function Get-SugestaoTag {
     param($Lote, $Visitas)
-    $media = ($Lote | ForEach-Object { $_.DataHora.Hour * 60 + $_.DataHora.Minute } | Measure-Object -Average).Average
+    $hm = Get-HorarioMedioLote -Lote $Lote
+    if ($null -eq $hm) { return $null }
+    $media = $hm.MediaMinutos
     $casaram = [System.Collections.Generic.List[object]]::new()
+    $soInicio = [System.Collections.Generic.List[object]]::new()
     foreach ($v in $Visitas) {
-        $ok = $false
-        $ini = ConvertTo-Minutos $v.hora_inicio
-        $fim = ConvertTo-Minutos $v.hora_fim
+        $ini = ConvertTo-Minutos ([string]$v.hora_inicio)
+        $fim = ConvertTo-Minutos ([string]$v.hora_fim)
         if ($null -ne $ini -and $null -ne $fim) {
-            if ($media -ge $ini -and $media -le $fim) { $ok = $true }
+            if ($media -ge ($ini - 30) -and $media -le ($fim + 30)) { $casaram.Add($v) }
+        } elseif ($null -ne $ini) {
+            $soInicio.Add($v)
         } elseif ($v.periodo) {
-            if ($v.periodo -eq 'manha' -and $media -ge 360 -and $media -le 720) { $ok = $true }
-            elseif ($v.periodo -eq 'tarde' -and $media -ge 721 -and $media -le 1110) { $ok = $true }
+            if ($v.periodo -eq 'manha' -and $media -ge 360 -and $media -le 720) { $casaram.Add($v) }
+            elseif ($v.periodo -eq 'tarde' -and $media -ge 721 -and $media -le 1110) { $casaram.Add($v) }
         }
-        if ($ok) { $casaram.Add($v) }
     }
     if ($casaram.Count -eq 1) { return $casaram[0].tag }
+    if ($casaram.Count -gt 1) { return $null }
+    if ($soInicio.Count -gt 0) { return Get-SugestaoTagProximidade -MediaMinutos $media -Visitas $soInicio }
     return $null
 }
 
@@ -551,6 +734,112 @@ function Resolve-TagSugestao {
     param([string]$Escolha, $Sugestao)
     if (($Escolha -eq '' -or $Escolha -eq 'S') -and $Sugestao) { return $Sugestao }
     return $Escolha
+}
+
+# ================= SELETOR DE PASTAS/LOTES DO DIA (setas + Espaco + Enter) =================
+# Lista os lotes do dia (pastas DD_visita_N do organizar-camera + avulsas agrupadas) p/ escolha
+# explicita da origem: setas navegam, Espaco ou numero [1-9] marca, A todos/nenhum, O abre a
+# pasta no Explorer, Enter confirma (retorna indices marcados), Q/Esc cancela (retorna $null).
+# Cada linha: [n] checkbox + pasta + qtd fotos + faixa + media HH:mm + GPS + sugestao do relatorio.
+function Show-SeletorLotesDia {
+    param([array]$Lotes, [string]$Data, [array]$Visitas = @())
+    $Itens = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $Lotes.Count; $i++) {
+        $l = @($Lotes[$i])
+        $origens = @($l | ForEach-Object { Get-OrigemCurtaFoto -Foto $_ } | Sort-Object -Unique)
+        $hm = Get-HorarioMedioLote -Lote $l
+        $sugTag = $null; $sugTxt = ''
+        if ($Visitas.Count -gt 0) {
+            $sugTag = Get-SugestaoTag -Lote $l -Visitas $Visitas
+            if ($sugTag) {
+                $vS = $Visitas | Where-Object { $_.tag -eq $sugTag } | Select-Object -First 1
+                $hr = Format-HorarioVisita $vS.hora_inicio $vS.hora_fim
+                if (-not $hr) { $hr = [string]$vS.periodo }
+                $nomeS = [string]$vS.produtor_pasta
+                if ($nomeS.Length -gt 34) { $nomeS = $nomeS.Substring(0, 34) + '...' }
+                $sugTxt = " <- SUGESTAO [$sugTag] $nomeS (relatorio $hr)"
+            }
+        }
+        $Itens.Add([PSCustomObject]@{
+            Indice = $i; Selecionado = $false
+            Rotulo = ($origens -join ' | ')
+            Qtd = $l.Count
+            Horario = $hm.Faixa
+            MediaHora = $hm.MediaHora
+            Gps = @($l | Where-Object { $_.TemGps }).Count
+            Pasta = (Split-Path $l[0].Arquivo.FullName -Parent)
+            Sugestao = $sugTxt
+        })
+    }
+    if ($Itens.Count -eq 0) { return $null }
+    $Atual = 0; $Offset = 0; $Altura = 15
+    try { $Altura = [Math]::Max(6, $Host.UI.RawUI.WindowSize.Height - 12) } catch { }
+    try { [Console]::CursorVisible = $false } catch { }
+    try {
+        while ($true) {
+            if ($Atual -gt ($Itens.Count - 1)) { $Atual = $Itens.Count - 1 }
+            if ($Atual -lt 0) { $Atual = 0 }
+            Clear-Host
+            $Marcados = @($Itens | Where-Object { $_.Selecionado }).Count
+            Write-Host ("=" * 78) -ForegroundColor Cyan
+            Write-Host " PASTAS DE FOTOS DO DIA $Data - escolha a origem correta    Marcadas: $Marcados / $($Itens.Count)" -ForegroundColor White
+            Write-Host ("=" * 78) -ForegroundColor Cyan
+            Write-Host " [Setas] Navegar | [Espaco/1-9] Marcar | [A] Todos/Nenhum | [O] Abrir pasta | [Enter] Confirmar | [Q/Esc] Cancelar" -ForegroundColor Yellow
+            Write-Host ("-" * 78) -ForegroundColor Cyan
+            if ($Atual -lt $Offset) { $Offset = $Atual }
+            if ($Atual -ge ($Offset + $Altura)) { $Offset = $Atual - $Altura + 1 }
+            $Fim = [Math]::Min($Itens.Count - 1, $Offset + $Altura - 1)
+            for ($i = $Offset; $i -le $Fim; $i++) {
+                $It = $Itens[$i]
+                $Check = if ($It.Selecionado) { "[X]" } else { "[ ]" }
+                $Seta  = if ($i -eq $Atual) { " > " } else { "   " }
+                $Num = if ($i -lt 9) { "[$($i + 1)] " } else { "    " }
+                $Linha = "$Seta$Num$Check $($It.Rotulo)  ($($It.Qtd) fotos, $($It.Horario), media $($It.MediaHora), GPS: $($It.Gps))$($It.Sugestao)"
+                if ($i -eq $Atual) { Write-Host $Linha -ForegroundColor Black -BackgroundColor Gray }
+                elseif ($It.Selecionado) { Write-Host $Linha -ForegroundColor Green }
+                elseif ($It.Sugestao) { Write-Host $Linha -ForegroundColor Yellow }
+                else { Write-Host $Linha -ForegroundColor White }
+            }
+            Write-Host ("-" * 78) -ForegroundColor Cyan
+            $Tecla = [Console]::ReadKey($true)
+            switch ($Tecla.Key) {
+                "UpArrow"   { if ($Atual -gt 0) { $Atual-- } }
+                "DownArrow" { if ($Atual -lt ($Itens.Count - 1)) { $Atual++ } }
+                "Spacebar"  { $Itens[$Atual].Selecionado = -not $Itens[$Atual].Selecionado }
+                { $_ -match '^(D|NumPad)[1-9]$' } {
+                    $n = [int]::Parse($_.Substring($_.Length - 1)) - 1
+                    if ($n -lt $Itens.Count) { $Itens[$n].Selecionado = -not $Itens[$n].Selecionado; $Atual = $n }
+                }
+                "A" { $novo = ($Marcados -lt $Itens.Count); foreach ($It in $Itens) { $It.Selecionado = $novo } }
+                "O" { try { Invoke-Item -LiteralPath $Itens[$Atual].Pasta } catch { } }
+                "Enter" { return , @($Itens | Where-Object { $_.Selecionado } | ForEach-Object { $_.Indice }) }
+                { $_ -in "Q", "Escape" } { return $null }
+            }
+        }
+    } finally {
+        try { [Console]::CursorVisible = $true } catch { }
+        Clear-KeyBuffer
+    }
+}
+
+# Copia um lote inteiro p/ a pasta do produtor [OD] + GPS + manifesto + status (scriptblock marcar).
+# Reutilizado pelo fluxo lote-a-lote e pelo seletor de pastas do dia [E].
+function Copy-LoteParaVisita {
+    param($Lote, $Visita, [string]$Modo, $RunFotos, $RunGps, $Marcar)
+    $copiadas = 0
+    foreach ($FotoItem in $Lote) {
+        try {
+            Copy-Item -LiteralPath $FotoItem.Arquivo.FullName -Destination $Visita.CaminhoDestino -Force -ErrorAction Stop
+            $copiadas++
+            $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $Visita.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $Visita.produtor_pasta })
+            Write-TriagemLog "COPIADA [Syncthing]: $($FotoItem.Arquivo.FullName) -> [OD]: $(Join-Path $Visita.CaminhoDestino $FotoItem.Arquivo.Name)"
+        } catch { Write-Host "   [!] Falha ao copiar $($FotoItem.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
+    }
+    $gps = Export-CoordenadasTxt -FotosLote $Lote -PastaDestino $Visita.CaminhoDestino -NomeProdutor $Visita.produtor_pasta
+    $RunGps.Add([PSCustomObject]@{ produtor = $Visita.produtor_pasta; count = $gps.Count; lat = $gps.MediaLat; lon = $gps.MediaLon; txt = $gps.TxtPath })
+    Write-Host "   [OK] $($Lote.Count) foto(s) + GPS ($($gps.Count)) copiadas para [OD]" -ForegroundColor Green
+    Write-Host "        Destino [OD]: $($Visita.CaminhoDestino)" -ForegroundColor DarkGray
+    & $Marcar $Visita.tag $Modo $copiadas (Split-Path $Lote[0].Arquivo.FullName -Parent)
 }
 
 # ================= EDITAR VISITA (data / periodo / hora / cidade / atividade / nome) =================
@@ -824,12 +1113,26 @@ function Repair-VisitaTxtAnexos {
     if (-not (Test-Path -LiteralPath $dest)) { New-Item -ItemType Directory -Force -Path $dest | Out-Null }
     $txt = Get-ChildItem -LiteralPath $inbox -File -Filter '*.txt' | Select-Object -First 1
     if ($txt) {
-        $body = Remove-YamlHeader (Get-Content -LiteralPath $txt.FullName -Raw -Encoding UTF8)
+        $body = Remove-Secao10 (Remove-MarkdownBasico (Remove-YamlHeader (Get-Content -LiteralPath $txt.FullName -Raw -Encoding UTF8)))
         Set-Content -LiteralPath (Join-Path $dest $txt.Name) -Value $body -Encoding UTF8
         $levados.Add($txt.Name)
         Write-Host "  [OK] TXT limpo [GD] -> [OD]: $(Join-Path $dest $txt.Name)" -ForegroundColor Green
         Write-TriagemLog "REPROCESSO TXT [GD]: $($txt.FullName) -> [OD]: $(Join-Path $dest $txt.Name)"
-    } else { Write-Host "  [!] Nenhum .txt na inbox [GD]: $inbox" -ForegroundColor Yellow }
+    } else {
+        # Sem .txt na inbox: monta do JSON (schema 1.0), grava o par com YAML na inbox e o limpo no [OD]
+        $json = Get-ChildItem -LiteralPath $inbox -File -Filter '*.json' | Select-Object -First 1
+        if ($json) {
+            $null = Write-TxtInboxDoJson -JsonPath $json.FullName
+            $body = ConvertFrom-RelatorioJson -Json $json.FullName
+            if ($body) {
+                $nomeTxt = [System.IO.Path]::GetFileNameWithoutExtension($json.Name) + '.txt'
+                Set-Content -LiteralPath (Join-Path $dest $nomeTxt) -Value $body -Encoding UTF8
+                $levados.Add($nomeTxt)
+                Write-Host "  [OK] TXT montado do JSON [GD] -> [OD]: $(Join-Path $dest $nomeTxt)" -ForegroundColor Green
+                Write-TriagemLog "REPROCESSO TXT DO JSON [GD]: $($json.FullName) -> [OD]: $(Join-Path $dest $nomeTxt)"
+            } else { Write-Host "  [!] JSON sem relatorio legivel: $($json.FullName)" -ForegroundColor Yellow }
+        } else { Write-Host "  [!] Nenhum .txt/.json na inbox [GD]: $inbox" -ForegroundColor Yellow }
+    }
     if ([string]$Registro.atividade -ieq 'ATIVIDADE INDIVIDUAL 1') {
         foreach ($a in @(Get-ChildItem -LiteralPath $inbox -File | Where-Object {
             $_.Extension -in @('.png', '.jpg', '.jpeg') -and $_.BaseName -match 'mapa|c?alend[aá]rio'
@@ -873,22 +1176,109 @@ function Save-ProcessadosPorArquivo {
     }
 }
 
-# Fluxo interativo do -Conferir: mostra a triagem que FOI FEITA (TXT/fotos/origem/envio)
-# e permite refazer com S/N (nunca apaga nem forca fotos a mais).
+# -Conferir sem fotos_origem_sugerida: 2+ pastas/lotes distintos no dia -> NAO mistura nem copia
+# tudo. Abre o seletor p/ o usuario marcar a pasta desta visita e grava a escolha em
+# fotos_origem_sugerida no _processados.json. Retorna $true quando pode seguir com a copia.
+function Resolve-OrigemFotosConferir {
+    param($Registro)
+    if ([string](Get-PropValue $Registro 'fotos_origem_sugerida')) { return $true }
+    $raizes = @($SyncthingFotos | Where-Object { Test-Path $_ })
+    if ($raizes.Count -eq 0) { return $true }
+    $fotosDia = Get-FotosCirurgico -Raizes $raizes -DatasAlvo @([string]$Registro.data) -Extensoes $ExtensoesFoto
+    $grupos = @($fotosDia | Group-Object { Split-Path $_.Arquivo.FullName -Parent })
+    if ($grupos.Count -lt 2) { return $true }
+    Write-Host "   [!] $($grupos.Count) pastas/lotes distintos em $($Registro.data) sem origem registrada — escolha a pasta desta visita." -ForegroundColor Yellow
+    $lotes = @($grupos | ForEach-Object { , @($_.Group | Sort-Object DataHora) })
+    $sel = Show-SeletorLotesDia -Lotes $lotes -Data ([string]$Registro.data)
+    if ($null -eq $sel) { Write-Host "   -> Selecao cancelada. Fotos nao alteradas." -ForegroundColor DarkGray; return $false }
+    $idx = @($sel)
+    if ($idx.Count -ne 1) { Write-Host "   [!] Marque exatamente UMA pasta para esta visita. Nada copiado." -ForegroundColor Red; return $false }
+    $pastaEscolhida = Split-Path $lotes[$idx[0]][0].Arquivo.FullName -Parent
+    Add-Member -InputObject $Registro -NotePropertyName fotos_origem_sugerida -NotePropertyValue $pastaEscolhida -Force
+    Save-ProcessadosPorArquivo -Registros @($Registro)
+    Write-TriagemLog "CONFERIR origem escolhida: $($Registro.produtor_pasta) <- $pastaEscolhida"
+    Write-Host "   [OK] Origem registrada em _processados.json: $pastaEscolhida" -ForegroundColor Green
+    return $true
+}
+
+# Oferece e copia as fotos faltantes do dia (Camera_Celular_Organizada etc.) p/ o destino [OD].
+# Retorna $true se copiou algo (registro atualizado em memoria; salvar com Save-ProcessadosPorArquivo).
+function Copy-FotosFaltantesVisita {
+    param($Registro)
+    if (-not (Resolve-OrigemFotosConferir -Registro $Registro)) { return $false }
+    $falt = Get-FotosFaltantesVisita -Registro $Registro
+    if (@($falt).Count -eq 0) {
+        Write-Host "   [OK] Nenhuma foto faltante encontrada para esta data/origem." -ForegroundColor Green
+        return $false
+    }
+    Write-Host "   Fotos faltantes ($(@($falt).Count)):" -ForegroundColor Yellow
+    $falt | Select-Object -First 20 | ForEach-Object { Write-Host "     $($_.Arquivo.Name)  [Syncthing]: $($_.Arquivo.DirectoryName)" -ForegroundColor DarkGray }
+    $resp = (Read-Host "   Copiar $(@($falt).Count) foto(s) faltante(s) para [OD]? (S/N — N mantem como esta)").Trim()
+    if ($resp -notmatch '^[Ss]') {
+        Write-Host "   -> Fotos nao alteradas (ok manter menos fotos que o original)." -ForegroundColor DarkGray
+        return $false
+    }
+    $copiadasConf = [System.Collections.Generic.List[object]]::new()
+    foreach ($f in $falt) {
+        try {
+            Copy-Item -LiteralPath $f.Arquivo.FullName -Destination $Registro.destino_onedrive -Force -ErrorAction Stop
+            $copiadasConf.Add($f)
+            Write-TriagemLog "REPROCESSO COPIADA [Syncthing]: $($f.Arquivo.FullName) -> [OD]: $(Join-Path $Registro.destino_onedrive $f.Arquivo.Name)"
+        } catch { Write-Host "   [!] Falha ao copiar $($f.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
+    }
+    if ($copiadasConf.Count -eq 0) { return $false }
+    $null = Export-CoordenadasTxt -FotosLote $copiadasConf.ToArray() -PastaDestino $Registro.destino_onedrive -NomeProdutor $Registro.produtor_pasta
+    $novoTotal = @(Get-ChildItem -LiteralPath $Registro.destino_onedrive -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() }).Count
+    Add-Member -InputObject $Registro -NotePropertyName fotos_copiadas -NotePropertyValue $novoTotal -Force
+    if ((Get-PropValue $Registro 'fotos_modo') -eq 'pulado') { Add-Member -InputObject $Registro -NotePropertyName fotos_modo -NotePropertyValue 'automatico' -Force }
+    Write-Host "   [OK] $($copiadasConf.Count) foto(s) copiadas para [OD]: $($Registro.destino_onedrive)" -ForegroundColor Green
+    return $true
+}
+
+# Fluxo interativo do -Conferir sobre a VARREDURA FISICA do Drive (nao apenas o JSON):
+# qualquer pasta pode ser reprocessada; pastas NOVA ganham triagem completa [R].
+# Nunca apaga nem forca fotos a mais.
 function Invoke-ConferirReprocessar {
-    Write-Host "`n=== CONFERIR / REPROCESSAR VISITAS JA PROCESSADAS ([GD] -> [OD]) ===" -ForegroundColor Cyan
-    $regsConf = Get-ProcessadosTodos
-    if (@($regsConf).Count -eq 0) {
-        Write-Host "[i] Nenhum registro encontrado em _processados.json ($InboxBase)." -ForegroundColor Yellow
+    Write-Host "`n=== CONFERIR / REPROCESSAR VISITAS (VARREDURA FISICA [GD] -> [OD]) ===" -ForegroundColor Cyan
+    $pastasConf = Get-InboxPastasFisicas
+    if (@($pastasConf).Count -eq 0) {
+        Write-Host "[i] Nenhuma pasta encontrada fisicamente na inbox ($InboxBase)." -ForegroundColor Yellow
         return
     }
-    Write-Host " $(@($regsConf).Count) visita(s) processada(s) listada(s). Opcoes por visita:" -ForegroundColor Gray
-    Write-Host "   [T] Recopiar TXT/anexos da inbox [GD] | [F] Copiar fotos faltantes | [A] Ambos | [P] Pular | [Q] Sair" -ForegroundColor Gray
-    foreach ($r in $regsConf) {
+    Write-Host " $(@($pastasConf).Count) pasta(s) encontrada(s) no Drive. Opcoes por visita:" -ForegroundColor Gray
+    Write-Host "   [T] Recopiar TXT/anexos [F] fotos faltantes [A] ambos | [R] Triar/reprocessar pasta NOVA | [P] Pular | [Q] Sair" -ForegroundColor Gray
+    $regsConf = [System.Collections.Generic.List[object]]::new()
+    foreach ($p in $pastasConf) {
+        $corStatus = switch ($p.Status) { 'NOVA' { 'Green' } 'SINCRONIZADA' { 'DarkGreen' } default { 'Yellow' } }
+        Write-Host "`n [$($p.Status)] $($p.MM) | $($p.Cidade) | $($p.Atividade) | $($p.Produtor)" -ForegroundColor $corStatus
+        Write-Host "   Origem [GD]: $($p.PastaInbox)" -ForegroundColor DarkGray
+        $r = $p.Registro
+        if (-not $r) {
+            # Pasta NOVA: triagem completa a partir do Drive (pasta padronizada DD-AAAA-MM-NOME - RESUMO
+            # no OneDrive + .txt limpo sem YAML + anexos Mapa/Calendario na ATV 1 + registro)
+            $op = (Read-Host "   [R] Triar/reprocessar esta visita [P] pular [Q] sair").Trim().ToUpper()
+            if ($op -eq 'Q') { break }
+            if ($op -ne 'R') { continue }
+            $todasNovas = Get-InboxVisitas   # atribuicao primeiro: return , @() preserva o array como objeto unico
+            $visitasNova = @($todasNovas | Where-Object { $_.PastaInbox.TrimEnd('\') -ieq $p.PastaInbox.TrimEnd('\') })
+            if ($visitasNova.Count -eq 0) {
+                Write-Host "   [!] Sem par .txt/.json com data legivel nesta pasta; nada a triar." -ForegroundColor Yellow
+                continue
+            }
+            $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas $visitasNova)
+            $r = @(Get-ProcessadosTodos | Where-Object { ([string]$_.pasta_inbox).TrimEnd('\') -ieq $p.PastaInbox.TrimEnd('\') }) | Select-Object -Last 1
+            if (-not $r) { continue }
+            $regsConf.Add($r)
+            if (Copy-FotosFaltantesVisita -Registro $r) {
+                Save-ProcessadosPorArquivo -Registros @($r)
+                Write-Host "   [OK] Registro [GD] atualizado: $($r.registro_path)" -ForegroundColor Cyan
+            }
+            continue
+        }
+        $regsConf.Add($r)
         $aud = Test-VisitaDestino -Registro $r
         $temProblema = (-not $aud.PastaExiste) -or (@($aud.TxtFaltando).Count -gt 0) -or ($aud.FotosFaltando -gt 0)
-        $cor = if ($temProblema) { 'Yellow' } else { 'Green' }
-        Write-Host "`n [$($r.data)] $($r.cidade) | $($r.atividade) | $($r.produtor_pasta)" -ForegroundColor $cor
+        if ($temProblema) { Write-Host "   [!] Pendencia no destino [OD] (pasta/TXT/fotos)." -ForegroundColor Yellow }
         Write-Host "   Destino [OD]: $($r.destino_onedrive)" -ForegroundColor DarkGray
         # TXT: caminho completo no destino, ou o que falta + origem na inbox
         $txtsReg = @(Get-PropValue $r 'arquivos_levados' | Where-Object { $_ -like '*.txt' })
@@ -919,32 +1309,7 @@ function Invoke-ConferirReprocessar {
             $mudou = $true
         }
         if ($op -in @('F', 'A')) {
-            $falt = Get-FotosFaltantesVisita -Registro $r
-            if (@($falt).Count -eq 0) {
-                Write-Host "   [OK] Nenhuma foto faltante encontrada para esta data/origem." -ForegroundColor Green
-            } else {
-                Write-Host "   Fotos faltantes ($(@($falt).Count)):" -ForegroundColor Yellow
-                $falt | Select-Object -First 20 | ForEach-Object { Write-Host "     $($_.Arquivo.Name)  [Syncthing]: $($_.Arquivo.DirectoryName)" -ForegroundColor DarkGray }
-                $resp = (Read-Host "   Copiar $(@($falt).Count) foto(s) faltante(s) para [OD]? (S/N — N mantem como esta)").Trim()
-                if ($resp -match '^[Ss]') {
-                    $copiadasConf = [System.Collections.Generic.List[object]]::new()
-                    foreach ($f in $falt) {
-                        try {
-                            Copy-Item -LiteralPath $f.Arquivo.FullName -Destination $r.destino_onedrive -Force -ErrorAction Stop
-                            $copiadasConf.Add($f)
-                            Write-TriagemLog "REPROCESSO COPIADA [Syncthing]: $($f.Arquivo.FullName) -> [OD]: $(Join-Path $r.destino_onedrive $f.Arquivo.Name)"
-                        } catch { Write-Host "   [!] Falha ao copiar $($f.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
-                    }
-                    if ($copiadasConf.Count -gt 0) {
-                        $null = Export-CoordenadasTxt -FotosLote $copiadasConf.ToArray() -PastaDestino $r.destino_onedrive -NomeProdutor $r.produtor_pasta
-                        $novoTotal = @(Get-ChildItem -LiteralPath $r.destino_onedrive -File | Where-Object { $ExtensoesFoto -contains $_.Extension.ToLower() }).Count
-                        Add-Member -InputObject $r -NotePropertyName fotos_copiadas -NotePropertyValue $novoTotal -Force
-                        if ((Get-PropValue $r 'fotos_modo') -eq 'pulado') { Add-Member -InputObject $r -NotePropertyName fotos_modo -NotePropertyValue 'automatico' -Force }
-                        $mudou = $true
-                        Write-Host "   [OK] $($copiadasConf.Count) foto(s) copiadas para [OD]: $($r.destino_onedrive)" -ForegroundColor Green
-                    }
-                } else { Write-Host "   -> Fotos nao alteradas (ok manter menos fotos que o original)." -ForegroundColor DarkGray }
-            }
+            if (Copy-FotosFaltantesVisita -Registro $r) { $mudou = $true }
         }
         if ($mudou) {
             Save-ProcessadosPorArquivo -Registros $regsConf
@@ -962,6 +1327,7 @@ function Invoke-CriarPastasEArquivar {
 
     foreach ($Dia in $RelatorioDias) {
         foreach ($V in $Dia.visitas) {
+            $V.cidade = Get-NomeCidadeOneDrive $V.cidade   # legado "Juquiá" -> pasta local "Juquia" (sem acento)
             if (-not (Test-CampoSeguro $V.cidade) -or -not (Test-CampoSeguro $V.atividade) -or -not (Test-CampoSeguro $V.produtor_pasta)) {
                 Write-Host "  [ERRO] Campos invalidos (path traversal?) em $($Dia.data): $($V.produtor_pasta)" -ForegroundColor Red
                 Write-TriagemLog "REJEITADO path-traversal: $($Dia.data) / $($V.produtor_pasta)"
@@ -991,9 +1357,19 @@ function Invoke-CriarPastasEArquivar {
             # No OneDrive vai APENAS o .txt limpo (sem YAML) + fotos/GPS + anexos ATV 1.
             # O .json original permanece somente na inbox do Drive pessoal (nao e copiado).
             $levados = [System.Collections.Generic.List[string]]::new()
-            $nomeBase = if ($V.SourceTxt) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceTxt) } else { "relatorio" }
+            $nomeBase = if ($V.SourceTxt) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceTxt) }
+                        elseif ($V.SourceJson) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceJson) }
+                        else { "relatorio" }
+            $body = $null
             if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt)) {
                 $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -LiteralPath $V.SourceTxt -Raw -Encoding UTF8) }
+            } elseif ($V.TxtBody) {
+                $body = $V.TxtBody   # corpo montado do JSON (inbox sem .txt)
+                if ($V.SourceJson) { $null = Write-TxtInboxDoJson -JsonPath $V.SourceJson }   # par na inbox com YAML no topo (aditivo)
+            }
+            if ($body) {
+                # [OD] recebe APENAS o .txt limpo: sem YAML, sem Markdown, sem secao 10 (.json nunca sobe)
+                $body = Remove-Secao10 (Remove-MarkdownBasico $body)
                 Set-Content -LiteralPath (Join-Path $dest "$nomeBase.txt") -Value $body -Encoding UTF8
                 $levados.Add("$nomeBase.txt")
             }
@@ -1075,6 +1451,15 @@ if ($resumoProc) {
     Write-Host "      Registro [GD]: $($resumoProc.caminho)" -ForegroundColor DarkGray
 }
 
+# Varredura FISICA do Drive (independente do _processados.json): situacao real da inbox no inicio
+$ScanFisico = Get-InboxPastasFisicas
+if (@($ScanFisico).Count -gt 0) {
+    $nNova = @($ScanFisico | Where-Object { $_.Status -eq 'NOVA' }).Count
+    $nPend = @($ScanFisico | Where-Object { $_.Status -eq 'TRIADA - PENDENTE SYNC' }).Count
+    $nSync = @($ScanFisico | Where-Object { $_.Status -eq 'SINCRONIZADA' }).Count
+    Write-Host " Drive [GD]: $(@($ScanFisico).Count) pasta(s) fisica(s) | $nNova nova(s) | $nPend pendente(s) de sync | $nSync sincronizada(s)" -ForegroundColor DarkGray
+}
+
 # ================= MODO -Conferir: LISTAR / CONFERIR / REPROCESSAR VISITAS JA PROCESSADAS =================
 if ($Conferir) {
     Invoke-ConferirReprocessar
@@ -1092,12 +1477,12 @@ try {
             Write-Host "      Caminho [GD]: $InboxBase" -ForegroundColor DarkGray
             $VisitasBrutas = $inbox
         } else {
-            # Sem visitas novas: ou tudo ja foi triado (idempotencia) ou a inbox esta vazia/offline.
-            $histConf = Get-ProcessadosTodos
-            if (@($histConf).Count -gt 0) {
-                Write-Host " [i] Nenhuma visita NOVA na inbox [GD] — $(@($histConf).Count) visita(s) anterior(es) ja foram triadas." -ForegroundColor Yellow
-                Write-Host "      Registro [GD]: $(@($histConf)[0].registro_path)" -ForegroundColor DarkGray
-                $opInbox = (Read-Host " [C] Conferir/reprocessar as ja triadas | [M] Colar JSON manual | [Q] Sair").Trim().ToUpper()
+            # Sem visitas novas: lista o que existe FISICAMENTE no Drive (status cruzado do JSON),
+            # em vez de apenas dizer "Nenhuma visita NOVA". Inbox vazia/offline -> fallback manual.
+            if (@($ScanFisico).Count -gt 0) {
+                Write-Host " [i] Nenhuma visita NOVA na inbox [GD] — pastas encontradas fisicamente no Drive:" -ForegroundColor Yellow
+                Show-InboxFisico -Pastas $ScanFisico
+                $opInbox = (Read-Host "`n [C] Conferir/reprocessar qualquer pasta | [M] Colar JSON manual | [Q] Sair").Trim().ToUpper()
                 if ($opInbox -eq 'C') { Invoke-ConferirReprocessar; exit 0 }
                 if ($opInbox -ne 'M') { Write-Host "[OK] Nada a fazer." -ForegroundColor Green; exit 0 }
             } else {
@@ -1203,7 +1588,7 @@ foreach ($Dia in $RelatorioDias) {
         $extra = if ($per) { " ($per)" } else { "" }
         Write-Host "   [$($v.tag)]$extra $($v.cidade) | $($v.atividade) | $($v.produtor_pasta)" -ForegroundColor Green
     }
-    Write-Host "   [Enter/S] Aceitar sugestao | [A/B/C] TAG | [P] Pular | [I] Foto a foto | [M] Manual (vizinhos) | [Q] Sair" -ForegroundColor Gray
+    Write-Host "   [Enter/S] Aceitar sugestao | [A/B/C] TAG | [E] Escolher pastas do dia | [P] Pular | [I] Foto a foto | [M] Manual | [Q] Sair" -ForegroundColor Gray
     Write-Host "------------------------------------------------------------------------" -ForegroundColor Cyan
 
     # 1) Lotes pre-agrupados por visita (tempo+GPS do organizar-camera) — preserva a separacao original
@@ -1225,20 +1610,36 @@ foreach ($Dia in $RelatorioDias) {
     if ($LoteAtual.Count -gt 0) { $Lotes.Add($LoteAtual.ToArray()) }
     $Lotes = @($Lotes | Sort-Object { $_[0].DataHora })
 
-    $NumLote = 0
-    foreach ($Lote in $Lotes) {
-        $NumLote++
+    $Consumidos = [System.Collections.Generic.HashSet[int]]::new()   # lotes ja copiados via [E] nao voltam ao prompt
+    for ($iLote = 0; $iLote -lt $Lotes.Count; $iLote++) {
+        if ($Consumidos.Contains($iLote)) { continue }
+        $Lote = $Lotes[$iLote]
+        $NumLote = $iLote + 1
         $QtdGps = @($Lote | Where-Object { $_.TemGps }).Count
         $Sugestao = Get-SugestaoTag -Lote $Lote -Visitas $Dia.visitas
-        Write-Host "`n Lote #$NumLote : $($Lote.Count) foto(s) | $($Lote[0].HoraStr) as $($Lote[-1].HoraStr) | GPS: $QtdGps" -ForegroundColor Cyan
+        $hmLote = Get-HorarioMedioLote -Lote $Lote
+        Write-Host "`n Lote #$NumLote : $($Lote.Count) foto(s) | $($hmLote.Faixa) | media $($hmLote.MediaHora) | GPS: $QtdGps" -ForegroundColor Cyan
         $origensLote = @($Lote | ForEach-Object { Get-OrigemCurtaFoto -Foto $_ } | Sort-Object -Unique)
         Write-Host "   Origem [Syncthing]: $($origensLote -join ' | ')  (AAAA\MM\pasta do organizar-camera)" -ForegroundColor DarkGray
+        # Horario medio das fotos vs horario/periodo de cada visita do relatorio (conferencia visual)
+        foreach ($v in $Dia.visitas) {
+            $hr = Format-HorarioVisita $v.hora_inicio $v.hora_fim
+            if (-not $hr) { $hr = [string]$v.periodo }
+            if (-not $hr) { $hr = 'sem horario' }
+            $dif = ''
+            $iniV = ConvertTo-Minutos ([string]$v.hora_inicio)
+            if ($null -ne $iniV) { $dif = " | dif $([int][Math]::Abs($hmLote.MediaMinutos - $iniV)) min" }
+            Write-Host "   Relatorio [$($v.tag)]: $hr  vs  fotos media $($hmLote.MediaHora)$dif" -ForegroundColor DarkGray
+        }
+        if ($Lotes.Count -ge 2) {
+            Write-Host "   [!] $($Lotes.Count) lotes/pastas neste dia — use [E] p/ escolher exatamente quais pastas copiar (nao misture visitas)." -ForegroundColor Yellow
+        }
         if ($Sugestao) {
             $vSug = $Dia.visitas | Where-Object { $_.tag -eq $Sugestao } | Select-Object -First 1
             Write-Host "   Sugestao: [$Sugestao] $($vSug.produtor_pasta) — pressione ENTER ou S para aceitar" -ForegroundColor Yellow
         }
 
-        $Escolha = Resolve-TagSugestao -Escolha ((Read-Host " TAG (A/B/C), Enter/S aceita sugestao, P pula, I individual, M manual, Q sair").Trim().ToUpper()) -Sugestao $Sugestao
+        $Escolha = Resolve-TagSugestao -Escolha ((Read-Host " TAG (A/B/C), Enter/S aceita sugestao, E escolhe pastas do dia, P pula, I individual, M manual, Q sair").Trim().ToUpper()) -Sugestao $Sugestao
 
         if ($Escolha -eq 'Q') { Write-Host "   -> Triagem encerrada." -ForegroundColor Yellow; Write-TriagemLog "ENCERRADO no lote #$NumLote de $($Dia.data)"; $Sair = $true; break }
         if ($Escolha -eq 'P' -or [string]::IsNullOrWhiteSpace($Escolha)) { Write-Host "   -> Lote pulado." -ForegroundColor DarkGray; continue }
@@ -1292,22 +1693,28 @@ foreach ($Dia in $RelatorioDias) {
             continue
         }
 
+        if ($Escolha -eq 'E') {
+            # Escolha explicita das pastas de origem do dia (setas + Espaco + Enter): copia SO o marcado
+            $selPastas = Show-SeletorLotesDia -Lotes $Lotes -Data $Dia.data -Visitas $Dia.visitas
+            if ($null -eq $selPastas) { continue }
+            $indicesSel = @($selPastas)
+            if ($indicesSel.Count -eq 0) { Write-Host "   -> Nenhuma pasta marcada." -ForegroundColor DarkGray; continue }
+            Write-Host "   Produtores do dia:" -ForegroundColor Yellow
+            foreach ($v in $Dia.visitas) { Write-Host "     [$($v.tag)] $($v.produtor_pasta)" -ForegroundColor Green }
+            $tagE = (Read-Host "   Copiar as pastas marcadas para qual TAG? (Enter cancela)").Trim().ToUpper()
+            $vE = $Dia.visitas | Where-Object { $_.tag -eq $tagE -and $_.CaminhoDestino } | Select-Object -First 1
+            if (-not $vE) { Write-Host "   -> Tag invalida. Nada copiado." -ForegroundColor Red; continue }
+            foreach ($idx in $indicesSel) {
+                Write-Host "   Pasta: $(Get-OrigemCurtaFoto -Foto $Lotes[$idx][0]) -> [$tagE] $($vE.produtor_pasta)" -ForegroundColor Cyan
+                Copy-LoteParaVisita -Lote $Lotes[$idx] -Visita $vE -Modo 'automatico' -RunFotos $RunFotos -RunGps $RunGps -Marcar $marcar
+                [void]$Consumidos.Add($idx)
+            }
+            continue
+        }
+
         $VisitaEscolhida = $Dia.visitas | Where-Object { $_.tag -eq $Escolha -and $_.CaminhoDestino } | Select-Object -First 1
         if ($VisitaEscolhida) {
-            $copiadasLote = 0
-            foreach ($FotoItem in $Lote) {
-                try {
-                    Copy-Item -LiteralPath $FotoItem.Arquivo.FullName -Destination $VisitaEscolhida.CaminhoDestino -Force -ErrorAction Stop
-                    $copiadasLote++
-                    $RunFotos.Add([PSCustomObject]@{ origem = $FotoItem.Arquivo.FullName; destino = (Join-Path $VisitaEscolhida.CaminhoDestino $FotoItem.Arquivo.Name); produtor = $VisitaEscolhida.produtor_pasta })
-                    Write-TriagemLog "COPIADA [Syncthing]: $($FotoItem.Arquivo.FullName) -> [OD]: $(Join-Path $VisitaEscolhida.CaminhoDestino $FotoItem.Arquivo.Name)"
-                } catch { Write-Host "   [!] Falha ao copiar $($FotoItem.Arquivo.Name): $($_.Exception.Message)" -ForegroundColor Red }
-            }
-            $gps = Export-CoordenadasTxt -FotosLote $Lote -PastaDestino $VisitaEscolhida.CaminhoDestino -NomeProdutor $VisitaEscolhida.produtor_pasta
-            $RunGps.Add([PSCustomObject]@{ produtor = $VisitaEscolhida.produtor_pasta; count = $gps.Count; lat = $gps.MediaLat; lon = $gps.MediaLon; txt = $gps.TxtPath })
-            Write-Host "   [OK] $($Lote.Count) foto(s) + GPS ($($gps.Count)) copiadas para [OD]" -ForegroundColor Green
-            Write-Host "        Destino [OD]: $($VisitaEscolhida.CaminhoDestino)" -ForegroundColor DarkGray
-            & $marcar $Escolha 'automatico' $copiadasLote (Split-Path $Lote[0].Arquivo.FullName -Parent)
+            Copy-LoteParaVisita -Lote $Lote -Visita $VisitaEscolhida -Modo 'automatico' -RunFotos $RunFotos -RunGps $RunGps -Marcar $marcar
         } else {
             Write-Host "   [!] Tag '$Escolha' invalida. Lote pulado." -ForegroundColor Red
         }

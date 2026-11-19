@@ -23,14 +23,24 @@ $NomeTarefa  = "Sync_ATER_OneDrive_GDrive"
 $ScriptPath  = $PSCommandPath
 $InboxBase   = "G:\Meu Drive"   # inbox espelhada (Drive pessoal): _processados.json compartilhado com triagem-campo.ps1
 
+# Nomes EXATOS das pastas locais [OD] (varredura). Padrao do usuario: "Juquia" SEM acento
+# (a antiga pasta "Juquiá" foi consolidada em "Juquia"). A trava - RESUMO + .txt bloqueia
+# as pastas manuais antigas sem relatorio.
 $Cidades = @(
     "Barra do Turvo",
     "Cananéia",
     "Jacupiranga",
-    "Juquiá",
+    "Juquia",
     "Pariquera-Açu",
     "Registro"
 )
+
+# Nome da cidade no destino [GDSA] quando difere da pasta local [OD] (chave = nome local).
+# Cidades fora deste mapa sobem com o mesmo nome local.
+$CidadesRemoto = @{
+    'Pariquera-Açu' = 'PARIQUERA AÇU'
+    'Juquia'        = 'Juquiá'
+}
 
 $Atividades = @(
     "ATIVIDADE INDIVIDUAL 1",
@@ -130,15 +140,23 @@ function Test-RemoteConfigurado {
 # ================= NOMES NO DESTINO E IGNORADOS =================
 $IgnoradosFile = Join-Path $PSScriptRoot 'ignorados.json'
 
-# "2026-11-JOAO DA SILVA" e "03 - Pedro Oliveira" -> "JOAO DA SILVA - RESUMO"
-# Idempotente: se o nome limpo ja termina em "- RESUMO" (case-insensitive), preserva
-# sem duplicar (pastas criadas pelo triagem-campo.ps1 ja vem com o sufixo).
+# "2026-11-07-MARIA - RESUMO" -> "07-2026-11-MARIA - RESUMO" (DD-AAAA-MM-, dia primeiro).
+# O destino [GDSA] recebe o MESMO nome da pasta local [OD]. Idempotente: nome ja no formato
+# novo (ou sem data) e preservado; sufixo - RESUMO garantido sem duplicar (case-insensitive).
 function Get-NomeResumo {
     param([string]$Nome)
-    # remove prefixo de data completa (AAAA-MM-DD-), ano-mês (AAAA-MM-) ou número (NN - )
-    $Limpo = $Nome -replace '^(\d{4}-\d{2}(-\d{2})?-|\d+\s*-\s*)', ''
-    if ($Limpo -match '\s*-\s*RESUMO$') { return $Limpo }
-    return "$Limpo - RESUMO"
+    if ($Nome -match '^(\d{4})-(\d{2})-(\d{2})-(.+)$') {
+        $Nome = "$($Matches[3])-$($Matches[1])-$($Matches[2])-$($Matches[4])"
+    }
+    if ($Nome -match '\s*-\s*RESUMO$') { return $Nome }
+    return "$Nome - RESUMO"
+}
+
+# Nome da cidade no destino [GDSA]: usa o mapa $CidadesRemoto quando existir; senao o proprio nome local
+function Get-NomeCidadeRemoto {
+    param([string]$Cidade)
+    if ($CidadesRemoto.ContainsKey($Cidade)) { return $CidadesRemoto[$Cidade] }
+    return $Cidade
 }
 
 # ================= URLs DO DRIVE + MANIFESTO runs\ =================
@@ -147,7 +165,7 @@ $Script:DriveDirCache = @{}
 
 function Get-DriveFolderUrl {
     param([string]$Atividade, [string]$Cidade, [string]$NomeDrive)
-    $parent = "$RemotoDrive/$Atividade/$Cidade"
+    $parent = "$RemotoDrive/$Atividade/$(Get-NomeCidadeRemoto $Cidade)"
     if (-not $Script:DriveDirCache.ContainsKey($parent)) {
         $entries = @()
         try {
@@ -301,14 +319,28 @@ function Save-Ignorados {
         Set-Content -Path $IgnoradosFile -Encoding UTF8
 }
 
-# Uma entrada por pasta de produtor, já com o nome padronizado usado no Google Drive
+# Trava anti-retroativo: só sobe pasta cujo nome termina em "- RESUMO" E que contenha
+# pelo menos um .txt de relatório (coordenadas_gps.txt não conta como relatório).
+# Pastas manuais antigas sem relatório nunca sobem retroativamente ao gdrive_saconsult.
+function Test-TravaResumoTxt {
+    param([System.IO.DirectoryInfo]$Pasta)
+    if ($Pasta.Name -notmatch '\s*-\s*RESUMO$') { return $false }
+    return (@(Get-ChildItem -LiteralPath $Pasta.FullName -File -Filter '*.txt' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'coordenadas_gps.txt' }).Count -gt 0)
+}
+
+# Uma entrada por pasta de produtor, já com o nome padronizado usado no Google Drive.
+# Por padrão retorna APENAS pastas que passam na trava (sync + seletor TUI).
+# -IncluirBloqueadas: devolve também as bloqueadas (flag Sincronizavel=$false) só p/ contagem informativa.
 function Get-Produtores {
-    param([string[]]$ListaCidades = $Cidades)
+    param([string[]]$ListaCidades = $Cidades, [switch]$IncluirBloqueadas)
     foreach ($Cidade in $ListaCidades) {
         foreach ($Atividade in $Atividades) {
             $CaminhoAtiv = Join-Path $OrigemBase "$Cidade\$Atividade"
             if (-not (Test-Path $CaminhoAtiv)) { continue }
             foreach ($Prod in (Get-ChildItem -Path $CaminhoAtiv -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+                $Sincronizavel = Test-TravaResumoTxt $Prod
+                if (-not $Sincronizavel -and -not $IncluirBloqueadas) { continue }
                 $NomeDrive = Get-NomeResumo $Prod.Name
                 [PSCustomObject]@{
                     Cidade    = $Cidade
@@ -317,7 +349,8 @@ function Get-Produtores {
                     NomeDrive = $NomeDrive
                     Relativo  = "$Cidade\$Atividade\$($Prod.Name)"
                     Local     = $Prod.FullName
-                    Nuvem     = "$RemotoDrive/$Atividade/$Cidade/$NomeDrive"
+                    Nuvem     = "$RemotoDrive/$Atividade/$(Get-NomeCidadeRemoto $Cidade)/$NomeDrive"
+                    Sincronizavel = $Sincronizavel
                 }
             }
             # ponytail: arquivos soltos na raiz da atividade não são copiados; criar tarefa extra se existirem
@@ -638,13 +671,19 @@ function Invoke-AterSync {
     Write-Host " Destino [GDSA]: $RemotoDrive" -ForegroundColor Gray
     Write-Host "============================================================`n" -ForegroundColor Cyan
 
-    # Uma tarefa por pasta de produtor (nome padronizado no destino), já sem as ignoradas
+    # Uma tarefa por pasta de produtor (nome padronizado no destino), já sem as ignoradas.
+    # A trava - RESUMO + .txt bloqueia pastas antigas/sem relatório (nunca sobem retroativamente).
     $ListaCidades = if ($ApenasCidade) { @($ApenasCidade) } else { $Cidades }
     $Ignorados = Get-Ignorados
-    $Todos = @(Get-Produtores -ListaCidades $ListaCidades)
-    $Tarefas = @($Todos | Where-Object { $Ignorados -notcontains $_.Relativo })
-    $QtdIgnorados = $Todos.Count - $Tarefas.Count
+    $Todos = @(Get-Produtores -ListaCidades $ListaCidades -IncluirBloqueadas)
+    $BloqueadasTrava = @($Todos | Where-Object { -not $_.Sincronizavel })
+    $Elegiveis = @($Todos | Where-Object { $_.Sincronizavel })
+    $Tarefas = @($Elegiveis | Where-Object { $Ignorados -notcontains $_.Relativo })
+    $QtdIgnorados = $Elegiveis.Count - $Tarefas.Count
 
+    if ($BloqueadasTrava.Count -gt 0) {
+        Write-Host "[INFO] $($BloqueadasTrava.Count) pasta(s) antiga(s)/sem relatório ignorada(s) pela trava - RESUMO + .txt." -ForegroundColor DarkGray
+    }
     if ($QtdIgnorados -gt 0) {
         Write-Host "[INFO] $QtdIgnorados pasta(s) ignorada(s) via ignorados.json.`n" -ForegroundColor DarkYellow
     }
