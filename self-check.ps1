@@ -272,6 +272,62 @@ try {
     if (@($idxObj.'2026-11-07').Count -ne 1) { throw 'camera: indice segunda data falhou' }
     if (-not (Test-Path -LiteralPath (Join-Path $visDir 'IMG_20261106_144600.jpg'))) { throw 'camera: indice nao pode mover/alterar fotos' }
 
+    # 1p) triagem: copia nao-destrutiva da inbox + anexos ATV1 + _processados.json append/idempotencia
+    $OneDriveBase = Join-Path $Tmp 'onedrive'
+    $LogFile      = Join-Path $Tmp 'triagem-log.txt'
+    $InboxBase    = Join-Path $Tmp 'inbox2'
+    $leaf1 = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Jacupiranga\ATIVIDADE INDIVIDUAL 1\2026-11-18-JOAO - RESUMO'
+    New-Item -ItemType Directory -Path $leaf1 -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $leaf1 'relatorio.txt') -Encoding UTF8 -Value "---`ndata: 2026-11-18`n---`nCorpo do relatorio JOAO"
+    Set-Content -LiteralPath (Join-Path $leaf1 'relatorio.json') -Encoding UTF8 -Value '{"metadados":{"data":"2026-11-18","cidade":"Jacupiranga","atividade":"ATIVIDADE INDIVIDUAL 1","produtor_pasta":"JOAO - RESUMO"}}'
+    foreach ($n in @('2026-11-18-JOAO - Mapa.png', '2026-11-18-JOAO - Mapa.jpeg', 'calendario-agricola.png', 'alendario-agricola.png', 'foto_qualquer.png', 'doc.gdoc')) {
+        New-Item -ItemType File -Path (Join-Path $leaf1 $n) | Out-Null
+    }
+    $inbox1 = Get-InboxVisitas
+    if (@($inbox1).Count -ne 1) { throw "triagem: inbox deveria detectar 1 visita, detectou $(@($inbox1).Count)" }
+    $dias1 = ConvertTo-RelatorioDias -Visitas $inbox1
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias $dias1
+    $dest1 = $inbox1[0].CaminhoDestino
+    # originais INTACTOS na inbox (nada movido/apagado, sem arvore _processados\)
+    foreach ($n in @('relatorio.txt', 'relatorio.json', 'doc.gdoc', '2026-11-18-JOAO - Mapa.png')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $leaf1 $n))) { throw "triagem: original '$n' nao pode sair da inbox" }
+    }
+    if (Test-Path -LiteralPath (Join-Path $InboxBase '2026\_inbox_relatorio_ater\_processados')) { throw 'triagem: arvore legada _processados\ nao pode ser criada' }
+    # .txt limpo + .json + anexos mapa/calendario no OneDrive
+    $txtDest = Get-Content -LiteralPath (Join-Path $dest1 'relatorio.txt') -Raw
+    if ($txtDest -match '---' -or $txtDest.Trim() -ne 'Corpo do relatorio JOAO') { throw 'triagem: .txt destino deveria estar limpo (sem YAML)' }
+    if (-not (Test-Path -LiteralPath (Join-Path $dest1 'relatorio.json'))) { throw 'triagem: .json nao copiado ao OneDrive' }
+    foreach ($n in @('2026-11-18-JOAO - Mapa.png', '2026-11-18-JOAO - Mapa.jpeg', 'calendario-agricola.png', 'alendario-agricola.png')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $dest1 $n))) { throw "triagem: anexo ATV1 '$n' nao copiado" }
+    }
+    foreach ($n in @('foto_qualquer.png', 'doc.gdoc')) {
+        if (Test-Path -LiteralPath (Join-Path $dest1 $n)) { throw "triagem: '$n' nao deveria ser copiado" }
+    }
+    # registro unico com campos corretos
+    $regPath = Join-Path $InboxBase '2026\_inbox_relatorio_ater\_processados.json'
+    if (-not (Test-Path -LiteralPath $regPath)) { throw 'triagem: _processados.json nao criado' }
+    $reg1 = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if ($reg1.Count -ne 1) { throw 'triagem: registro deveria ter 1 entrada' }
+    if ($reg1[0].pasta_inbox -ne $leaf1 -or $reg1[0].destino_onedrive -ne $dest1) { throw 'triagem: pasta_inbox/destino_onedrive incorretos' }
+    if ($reg1[0].data -ne '2026-11-18' -or $reg1[0].processado_em -notmatch '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$') { throw 'triagem: data/processado_em incorretos' }
+    if ($reg1[0].arquivos_levados -notcontains 'relatorio.txt' -or $reg1[0].arquivos_levados -notcontains 'calendario-agricola.png') { throw 'triagem: arquivos_levados incompleto' }
+    # idempotencia: visita registrada nao volta; ATV2 nova aparece e NAO leva anexos
+    $leaf2 = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Jacupiranga\ATIVIDADE INDIVIDUAL 2\2026-11-18-MARIA - RESUMO'
+    New-Item -ItemType Directory -Path $leaf2 -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $leaf2 'relatorio.txt') -Encoding UTF8 -Value "---`ndata: 2026-11-18`n---`nCorpo MARIA"
+    Set-Content -LiteralPath (Join-Path $leaf2 'relatorio.json') -Encoding UTF8 -Value '{"metadados":{"data":"2026-11-18","cidade":"Jacupiranga","atividade":"ATIVIDADE INDIVIDUAL 2","produtor_pasta":"MARIA - RESUMO"}}'
+    New-Item -ItemType File -Path (Join-Path $leaf2 'MARIA - Mapa.png') | Out-Null
+    $inbox2 = Get-InboxVisitas
+    if (@($inbox2).Count -ne 1 -or $inbox2[0].PastaInbox -ne $leaf2) { throw 'triagem: idempotencia falhou (visita registrada voltou ou ATV2 nao detectada)' }
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas $inbox2)
+    $dest2 = $inbox2[0].CaminhoDestino
+    if (Test-Path -LiteralPath (Join-Path $dest2 'MARIA - Mapa.png')) { throw 'triagem: anexo de mapa nao deve ser copiado fora da ATV 1' }
+    if (-not (Test-Path -LiteralPath (Join-Path $leaf2 'MARIA - Mapa.png'))) { throw 'triagem: original da ATV2 nao pode sair da inbox' }
+    $reg2 = @(Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json)
+    if ($reg2.Count -ne 2) { throw "triagem: append cumulativo falhou (esperado 2, obtido $($reg2.Count))" }
+    $inbox3 = Get-InboxVisitas
+    if (@($inbox3).Count -ne 0) { throw 'triagem: segunda leitura deveria pular todas as visitas registradas' }
+
     # 1l) organizar-audios: mes pelo nome Xiaomi, ano/fallback pelo LastWriteTime
     if ((Get-PastaDestinoAudio '3 de nov., 11.39 Jose e Marta.m4a' ([datetime]'2026-11-03 11:39:00')) -ne '2026-11') { throw 'audios: padrao Xiaomi nov falhou' }
     if ((Get-PastaDestinoAudio '10 de jan., 08.32 Antonio .m4a' ([datetime]'2026-01-10 08:32:00')) -ne '2026-01') { throw 'audios: padrao Xiaomi jan falhou' }

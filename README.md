@@ -41,8 +41,8 @@ G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<ATIVIDADE INDIVIDUAL X>
 ```
 
 - É a variável **`$InboxBase`** no topo do `triagem-campo.ps1` (padrão `G:\Meu Drive`).
-- O `triagem-campo.ps1` varre os anos disponíveis, **ignora `_processados`**, e agrupa o `.txt` + `.json` de mesmo nome base como **uma única visita**.
-- Após confirmar, os originais são **movidos para `_processados\<MM>\<Cidade>\<Atividade>\`** (não reprocessa na próxima execução).
+- O `triagem-campo.ps1` varre os anos disponíveis, agrupa o `.txt` + `.json` de mesmo nome base como **uma única visita** e **pula as pastas já registradas** em `_processados.json` (a pasta legada `_processados\`, se existir, também fica de fora).
+- Após confirmar, os originais **permanecem intactos na inbox** (cópia não-destrutiva): o `.txt` limpo e o `.json` são gravados/copiados no OneDrive e um registro é acrescentado (**append**) a `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` — é esse registro que garante a idempotência (não reprocessa na próxima execução).
 - **Fallback**: se a inbox estiver vazia/ausente, o script usa `visitas.json` na raiz ou a colagem manual no terminal (`FIM` encerra).
 
 ### Fluxo ponta a ponta
@@ -52,7 +52,7 @@ Relato / Áudio
    └─ Skill relatorio-ater-anater  →  G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\  (.txt + .json)
  Fotos do celular  →  Syncthing  →  C:\Users\randomacesso\Sync\Camera_Celular\Camera
    └─ triagem-campo.ps1
-        ├─ Etapa 1: revisão TUI → cria pastas no OneDrive + grava .txt limpo/.json + arquiva _processados
+        ├─ Etapa 1: revisão TUI → cria pastas no OneDrive + grava .txt limpo/.json (+ anexos ATV 1) + append _processados.json (inbox intacta)
         └─ Etapa 2: busca cirúrgica por data (_visita.json, zero EXIF), lotes por visita + 40 min, pré-sugere produtor (Enter/S), copia fotos + coordenadas_gps.txt
              └─ OneDrive: ...\Fernando\<Cidade>\<Atividade>\<AAAA-MM-DD-Produtor - RESUMO>
                   └─ start-sync.ps1 (rclone copy --update --exclude *.json)
@@ -227,7 +227,7 @@ pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar    # força cola
 
 ### Fonte primária: inbox espelhada (`.txt` + `.json`)
 
-O script varre `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\` (ignorando `_processados`), agrupa o `.txt` + `.json` de mesmo nome base como uma visita e usa o `.json` (`schema_version 1.0`) como fonte de metadados (`data`, `periodo`, `hora_inicio`, `hora_fim`, `cidade`, `atividade`, `produtor_pasta`). Fallback: `.txt` com YAML, `visitas.json` manual ou colagem. Só trata `.txt`/`.json` (sem `.gdoc`).
+O script varre `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\`, agrupa o `.txt` + `.json` de mesmo nome base como uma visita e usa o `.json` (`schema_version 1.0`) como fonte de metadados (`data`, `periodo`, `hora_inicio`, `hora_fim`, `cidade`, `atividade`, `produtor_pasta`). **Idempotência**: pastas cujo caminho já consta em `_processados.json` (registro único por ano, com `pasta_inbox`) são puladas automaticamente; a pasta legada `_processados\` também é ignorada. Fallback: `.txt` com YAML, `visitas.json` manual ou colagem. Só trata `.txt`/`.json` como relatório (`.gdoc`/`.gsheet` ficam intactos no Drive).
 
 ### Nome da pasta: prefixo `AAAA-MM-DD-` + sufixo `- RESUMO`
 
@@ -254,13 +254,14 @@ Antes de tocar no disco, o script abre uma lista navegável com `[Console]::Read
 | `↑` / `↓` | Navegar na lista |
 | `E` | **Editar** o item: **data** `AAAA-MM-DD`, **período/horário** (`manha`/`tarde`, `hora_inicio`/`hora_fim`), **cidade** (`1–6`), **atividade** (`1–6` + `7 PROJETO PRODUTIVO`), **nome da pasta** (Enter mantém em cada passo; sempre volta a ter prefixo `AAAA-MM-DD-` e sufixo ` - RESUMO`) |
 | `D` / `Delete` | **Remover** o item selecionado da lista (não cria a pasta) |
-| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar as pastas, gravar os relatórios no OneDrive e arquivar na inbox? (S/N)"`. `S` cria as pastas, grava os relatórios e arquiva; `N` volta à lista |
+| `C` / `Enter` | **Confirmar** — pergunta `"Deseja criar as pastas, gravar os relatórios no OneDrive e registrar em _processados.json? (S/N)"`. `S` cria as pastas, grava os relatórios e registra; `N` volta à lista |
 | `Q` / `Esc` | **Cancelar e sair** sem criar nenhuma pasta |
 
 `try/finally` garante que `[Console]::CursorVisible` volte a `$true` ao sair. Só depois da confirmação (`S`):
 - cria `Cidade\Atividade\AAAA-MM-DD-PRODUTOR - RESUMO` no `$OneDriveBase`;
 - grava o **`.txt` limpo** (remove o bloco YAML `---…---` do topo, pronto para colar no Word) e copia o **`.json`** irmão para a pasta do produtor (ambos ficam locais/OneDrive);
-- **move** os originais da inbox para `_processados\<MM>\<Cidade>\<Atividade>\` (não reprocessa).
+- **anexos automáticos só na `ATIVIDADE INDIVIDUAL 1`** (case-insensitive): imagens `.png`/`.jpg`/`.jpeg` da pasta da visita cujo nome contenha `mapa` ou `calendario` (regex `mapa|c?alend[aá]rio`, tolera `alendario-agricola.png`) são **copiadas** junto — ex.: `... - Mapa.png`, `... - Mapa.jpeg`, `calendario-agricola.png`. Da ATV 2 em diante, não busca anexos;
+- **cópia não-destrutiva**: nada é movido/apagado da inbox (`.txt`, `.json`, `.gdoc`, imagens ficam intactos no `G:`); em vez da antiga árvore `_processados\`, cada visita processada ganha um registro **append** no arquivo único `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com `processado_em`, `pasta_inbox`, `data`, `cidade`, `atividade`, `produtor_pasta`, `destino_onedrive` e `arquivos_levados`. O `Get-InboxVisitas` consulta esse registro e pula as pastas já processadas (idempotência).
 
 ### Etapa 2 — Triagem inteligente de fotos + GPS
 

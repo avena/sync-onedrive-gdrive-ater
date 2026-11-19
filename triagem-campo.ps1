@@ -6,7 +6,8 @@
     G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\<MM>\<Cidade>\<Atividade>\<AAAA-MM-DD-NOME - RESUMO>\
     com pares .txt/.json (schema_version 1.0). Fallback: visitas.json manual ou colagem (FIM).
     Etapa 1: revisao interativa (TUI) -> cria pastas no OneDrive, grava .txt limpo (sem YAML)
-    e .json, e arquiva os originais em _processados.
+    e copia o .json (originais da inbox INTACTOS). Na ATV 1 copia anexos Mapa/Calendario
+    Agricola (.png/.jpg/.jpeg). Registra append em _processados.json por ano (idempotente).
     Etapa 2: busca cirurgica pelas datas do relatorio (so <AAAA>\<MM> alvo; nome/hora/GPS
     lidos direto do _visita.json, zero EXIF nas visitas; avulsas/brutas pre-filtradas pelo
     nome *AAAAMMDD*). Visitas ja viram lotes pre-agrupados; avulsas agrupam por 40 min.
@@ -141,12 +142,13 @@ function Read-MetadadosTxt {
 
 function New-Visita {
     param($Data, $Periodo, $HoraInicio, $HoraFim, $Cidade, $Atividade, $ProdutorPasta,
-          $SourceTxt, $SourceJson, $TxtBody, $OrigemInbox, $Ano, $MM, $LeafName)
+          $SourceTxt, $SourceJson, $TxtBody, $OrigemInbox, $Ano, $MM, $LeafName, $PastaInbox)
     return [PSCustomObject]@{
         data = $Data; periodo = $Periodo; hora_inicio = $HoraInicio; hora_fim = $HoraFim
         cidade = $Cidade; atividade = $Atividade; produtor_pasta = $ProdutorPasta; tag = $null
         SourceTxt = $SourceTxt; SourceJson = $SourceJson; TxtBody = $TxtBody
-        OrigemInbox = $OrigemInbox; Ano = $Ano; MM = $MM; LeafName = $LeafName; CaminhoDestino = $null
+        OrigemInbox = $OrigemInbox; Ano = $Ano; MM = $MM; LeafName = $LeafName
+        PastaInbox = $PastaInbox; CaminhoDestino = $null
     }
 }
 
@@ -159,11 +161,24 @@ function Get-InboxVisitas {
     foreach ($ano in $anos) {
         $inbox = Join-Path $ano.FullName "_inbox_relatorio_ater"
         if (-not (Test-Path -LiteralPath $inbox)) { continue }
+        # Idempotencia: pastas ja registradas em _processados.json nao voltam a lista.
+        # (A pasta legada _processados\ ja fica de fora: o filtro de meses so aceita ^\d{2}$.)
+        $jaProcessados = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        $regPath = Join-Path $inbox '_processados.json'
+        if (Test-Path -LiteralPath $regPath) {
+            try {
+                foreach ($r in @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+                    $pi = [string](Get-PropValue $r 'pasta_inbox')
+                    if ($pi) { [void]$jaProcessados.Add($pi.TrimEnd('\')) }
+                }
+            } catch { }
+        }
         $meses = @(Get-ChildItem -LiteralPath $inbox -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{2}$' })
         foreach ($mm in $meses) {
             foreach ($cid in @(Get-ChildItem -LiteralPath $mm.FullName -Directory -ErrorAction SilentlyContinue)) {
                 foreach ($ativ in @(Get-ChildItem -LiteralPath $cid.FullName -Directory -ErrorAction SilentlyContinue)) {
                     foreach ($prod in @(Get-ChildItem -LiteralPath $ativ.FullName -Directory -ErrorAction SilentlyContinue)) {
+                        if ($jaProcessados.Contains($prod.FullName.TrimEnd('\'))) { continue }
                         $leaf = $prod.Name
                         $arqs = @(Get-ChildItem -LiteralPath $prod.FullName -File -ErrorAction SilentlyContinue |
                             Where-Object { $_.Extension -in @('.txt', '.json') })
@@ -207,7 +222,7 @@ function Get-InboxVisitas {
                                 -Cidade $cidade -Atividade $atividade -ProdutorPasta $pasta `
                                 -SourceTxt $(if ($txt) { $txt.FullName } else { $null }) `
                                 -SourceJson $(if ($json) { $json.FullName } else { $null }) -TxtBody $body `
-                                -OrigemInbox $true -Ano $ano.Name -MM $mm.Name -LeafName $leaf))
+                                -OrigemInbox $true -Ano $ano.Name -MM $mm.Name -LeafName $leaf -PastaInbox $prod.FullName))
                         }
                     }
                 }
@@ -643,7 +658,7 @@ function Show-RevisaoVisitas {
                 { $_ -in "C", "Enter" } {
                     try { [Console]::CursorVisible = $true } catch { }
                     Write-Host ""
-                    $Resp = Read-Host "Deseja criar as pastas, gravar os relatorios no OneDrive e arquivar na inbox? (S/N)"
+                    $Resp = Read-Host "Deseja criar as pastas, gravar os relatorios no OneDrive e registrar em _processados.json? (S/N)"
                     Clear-KeyBuffer
                     if ($Resp -in @('s', 'S', 'y', 'Y')) {
                         foreach ($Dia in $RelatorioDias) {
@@ -662,7 +677,34 @@ function Show-RevisaoVisitas {
     }
 }
 
-# ================= CRIAR PASTAS + GRAVAR RELATORIOS + ARQUIVAR INBOX =================
+# ================= REGISTRO UNICO _processados.json (append, por ano) =================
+function Add-ProcessadoRegistro {
+    param($Visita, [string]$Destino, [string[]]$Arquivos)
+    $ano = $Visita.Ano
+    if (-not $ano -and $Visita.data -match '^(\d{4})') { $ano = $Matches[1] }
+    if (-not $ano) { throw 'Visita sem ano (inbox/data) para registrar.' }
+    $inboxAno = Join-Path $InboxBase "$ano\_inbox_relatorio_ater"
+    if (-not (Test-Path -LiteralPath $inboxAno)) { New-Item -ItemType Directory -Force -Path $inboxAno | Out-Null }
+    $regPath = Join-Path $inboxAno '_processados.json'
+    $lista = @()
+    if (Test-Path -LiteralPath $regPath) {
+        try { $lista = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $lista = @() }
+    }
+    $lista += [PSCustomObject]@{
+        processado_em    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        pasta_inbox      = $Visita.PastaInbox
+        data             = $Visita.data
+        cidade           = $Visita.cidade
+        atividade        = $Visita.atividade
+        produtor_pasta   = $Visita.produtor_pasta
+        destino_onedrive = $Destino
+        arquivos_levados = @($Arquivos)
+    }
+    ConvertTo-Json -InputObject $lista -Depth 6 | Set-Content -LiteralPath $regPath -Encoding UTF8
+    return $regPath
+}
+
+# ================= CRIAR PASTAS + GRAVAR RELATORIOS (copia nao-destrutiva da inbox) =================
 function Invoke-CriarPastasEArquivar {
     param([array]$RelatorioDias)
     $PastasCriadas = [System.Collections.Generic.List[string]]::new()
@@ -692,27 +734,41 @@ function Invoke-CriarPastasEArquivar {
                 Write-Host "  [JA EXISTE] $($V.cidade) > $($V.atividade) > $($V.produtor_pasta)" -ForegroundColor DarkGray
             }
 
+            # Copia NAO-DESTRUTIVA: originais da inbox ficam intactos no Drive.
             # Grava .txt limpo (sem YAML) e copia o .json irmao (ambos ficam locais/OneDrive)
+            $levados = [System.Collections.Generic.List[string]]::new()
             $nomeBase = if ($V.SourceTxt) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceTxt) } else { "relatorio" }
             if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt)) {
                 $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -LiteralPath $V.SourceTxt -Raw -Encoding UTF8) }
                 Set-Content -LiteralPath (Join-Path $dest "$nomeBase.txt") -Value $body -Encoding UTF8
+                $levados.Add("$nomeBase.txt")
             }
             if ($V.SourceJson -and (Test-Path -LiteralPath $V.SourceJson)) {
                 Copy-Item -LiteralPath $V.SourceJson -Destination (Join-Path $dest ([System.IO.Path]::GetFileName($V.SourceJson))) -Force
+                $levados.Add([System.IO.Path]::GetFileName($V.SourceJson))
             }
 
-            # Arquiva originais da inbox em _processados\<MM>\<Cidade>\<Atividade>\<leaf>
-            if ($V.OrigemInbox -and $V.Ano -and $V.MM) {
-                $proc = Join-Path $InboxBase "$($V.Ano)\_inbox_relatorio_ater\_processados\$($V.MM)\$($V.cidade)\$($V.atividade)\$($V.LeafName)"
+            # Anexos automaticos so na ATV 1: Mapa / Calendario Agricola (imagens na pasta da inbox)
+            if (($V.atividade -ieq 'ATIVIDADE INDIVIDUAL 1') -and $V.PastaInbox -and (Test-Path -LiteralPath $V.PastaInbox)) {
+                foreach ($a in @(Get-ChildItem -LiteralPath $V.PastaInbox -File -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Extension -in @('.png', '.jpg', '.jpeg') -and $_.BaseName -match 'mapa|c?alend[aá]rio'
+                })) {
+                    try {
+                        Copy-Item -LiteralPath $a.FullName -Destination $dest -Force -ErrorAction Stop
+                        $levados.Add($a.Name)
+                        Write-TriagemLog "ANEXO ATV1: $($a.Name) -> $($V.produtor_pasta)"
+                    } catch { Write-Host "  [!] Falha ao copiar anexo $($a.Name): $($_.Exception.Message)" -ForegroundColor Yellow }
+                }
+            }
+
+            # Registro unico append em _processados.json (sem arvore _processados\; nada e movido/apagado)
+            if ($V.OrigemInbox -and $V.PastaInbox) {
                 try {
-                    New-Item -ItemType Directory -Force -Path $proc | Out-Null
-                    if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt))   { Move-Item -LiteralPath $V.SourceTxt -Destination $proc -Force }
-                    if ($V.SourceJson -and (Test-Path -LiteralPath $V.SourceJson)) { Move-Item -LiteralPath $V.SourceJson -Destination $proc -Force }
-                    Write-TriagemLog "ARQUIVADO inbox: $($V.SourceTxt) -> $proc"
+                    Add-ProcessadoRegistro -Visita $V -Destino $dest -Arquivos @($levados)
+                    Write-TriagemLog "REGISTRADO _processados.json: $($V.PastaInbox) -> $dest"
                 } catch {
-                    Write-Host "  [!] Falha ao arquivar inbox: $($_.Exception.Message)" -ForegroundColor Yellow
-                    Write-TriagemLog "ERRO arquivar: $($_.Exception.Message)"
+                    Write-Host "  [!] Falha ao registrar em _processados.json: $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-TriagemLog "ERRO registrar: $($_.Exception.Message)"
                 }
             }
         }
@@ -787,7 +843,7 @@ if (-not $Confirmado) {
     exit 0
 }
 
-# Origens para o manifesto (antes de arquivar/mover)
+# Origens para o manifesto (antes de copiar/registrar)
 $RunOrigens = [System.Collections.Generic.List[object]]::new()
 $RunFotos   = [System.Collections.Generic.List[object]]::new()
 $RunGps     = [System.Collections.Generic.List[object]]::new()
