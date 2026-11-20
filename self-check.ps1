@@ -1,4 +1,4 @@
-# Self-check: roda em pasta temporária, sem tocar no OneDrive real nem no ignorados.json
+﻿# Self-check: roda em pasta temporária, sem tocar no OneDrive real nem no ignorados.json
 $ErrorActionPreference = 'Stop'
 Write-Host '[SELF-CHECK] Ambiente temporario isolado — nenhuma pasta real ([GD], [OD], [GDSA] ou Syncthing) sera alterada.' -ForegroundColor Cyan
 $Script        = Join-Path $PSScriptRoot 'start-sync.ps1'

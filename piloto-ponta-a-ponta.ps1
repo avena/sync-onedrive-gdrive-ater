@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Teste piloto controlado do fluxo completo: inbox Drive -> triagem -> OneDrive -> Google Drive.
 .DESCRIPTION

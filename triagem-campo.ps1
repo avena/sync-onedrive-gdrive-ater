@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Triagem de Fotos de Campo (Inbox Drive / Syncthing -> OneDrive ATER) + GPS EXIF + runs\
 .DESCRIPTION

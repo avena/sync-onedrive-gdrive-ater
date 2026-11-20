@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Organiza fotos da camera do Android por VISITA (tempo + raio GPS) em
     Camera_Celular_Organizada, com _visita.json, estado persistente e

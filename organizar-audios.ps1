@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Move audios soltos na raiz de GravadorDeConversa (Syncthing) para pastas AAAA-MM.
 .DESCRIPTION

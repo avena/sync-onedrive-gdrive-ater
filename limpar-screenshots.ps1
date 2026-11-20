@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Organiza prints do Android por APLICATIVO na pasta nativa Screenshots e
     remove prints de lockscreen automaticamente.
