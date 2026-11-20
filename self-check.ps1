@@ -712,6 +712,120 @@ try {
     # caminho inexistente -> 0, sem criar arquivo
     if ((Remove-ProcessadosPiloto -PastaInboxAno (Join-Path $Tmp 'naoExiste') -PastaInbox $leafPilotoT -DestinoOD 'C:\od\X') -ne 0) { throw 'piloto limpar: sem _processados.json deveria retornar 0' }
 
+    # 1ae) seletor: "Já transferido" unificado no _processados.json (leitura + ordenação por data decrescente)
+    $OrigemBase = Join-Path $Tmp 'selFernando'
+    $Cidades    = @('Jacupiranga')
+    $Atividades = @('ATIVIDADE INDIVIDUAL 1')
+    $InboxBase  = Join-Path $Tmp 'selInbox'
+    $selAtiv = Join-Path $OrigemBase 'Jacupiranga\ATIVIDADE INDIVIDUAL 1'
+    foreach ($n in @('05-2026-11-ANTIGO - RESUMO', '12-2026-11-RECENTE - RESUMO', '2026-11-08-MEIO - RESUMO', 'SEM DATA - RESUMO')) {
+        $d = Join-Path $selAtiv $n
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $d 'relatorio.txt') -Encoding UTF8 -Value 'Corpo'
+    }
+    $selProds = @(Get-Produtores)
+    if ($selProds.Count -ne 4) { throw "seletor: esperava 4 produtores, obtidos $($selProds.Count)" }
+    $pRecente = $selProds | Where-Object { $_.Produtor -eq '12-2026-11-RECENTE - RESUMO' }
+    $pAntigo  = $selProds | Where-Object { $_.Produtor -eq '05-2026-11-ANTIGO - RESUMO' }
+    $pMeio    = $selProds | Where-Object { $_.Produtor -eq '2026-11-08-MEIO - RESUMO' }
+
+    # (1) leitura: sincronizada=true no _processados.json identifica o produtor já transferido
+    $selRegDir = Join-Path $InboxBase '2026\_inbox_relatorio_ater'
+    New-Item -ItemType Directory -Path $selRegDir -Force | Out-Null
+    $selRegPath = Join-Path $selRegDir '_processados.json'
+    @(
+        [PSCustomObject]@{ destino_onedrive = $pRecente.Local; produtor_pasta = $pRecente.Produtor; sincronizada = $true; sincronizada_em = '2026-11-12 10:00:00' },
+        [PSCustomObject]@{ destino_onedrive = $pAntigo.Local; produtor_pasta = $pAntigo.Produtor; sincronizada = $false }
+    ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $selRegPath -Encoding UTF8
+    $transf = Get-ProcessadosTransferidos
+    if (-not $transf.Contains($pRecente.Local.TrimEnd('\'))) { throw 'seletor: destino com sincronizada=true deveria ser identificado como transferido' }
+    if ($transf.Contains($pAntigo.Local.TrimEnd('\'))) { throw 'seletor: destino com sincronizada=false nao pode ser transferido' }
+    if ($transf.Count -ne 1) { throw "seletor: esperava 1 transferido, obtidos $($transf.Count)" }
+
+    # (3) ordenação decrescente pela data do prefixo (DD-AAAA-MM-/AAAA-MM-DD-); sem data vai ao fim
+    if ((Get-DataPrefixoPasta '12-2026-11-RECENTE - RESUMO').ToString('yyyy-MM-dd') -ne '2026-11-12') { throw 'seletor: data DD-AAAA-MM- incorreta' }
+    if ((Get-DataPrefixoPasta '2026-11-08-MEIO - RESUMO').ToString('yyyy-MM-dd') -ne '2026-11-08') { throw 'seletor: data AAAA-MM-DD- incorreta' }
+    if ((Get-DataPrefixoPasta 'SEM DATA - RESUMO') -ne [datetime]::MinValue) { throw 'seletor: sem data deveria ser MinValue' }
+    $selItens = @($selProds | ForEach-Object { [PSCustomObject]@{ Produtor = $_.Produtor; Data = (Get-DataPrefixoPasta $_.Produtor); Cidade = $_.Cidade; Atividade = $_.Atividade } })
+    $selOrd = @($selItens | Sort-Object -Property @{ Expression = 'Data'; Descending = $true }, Cidade, Atividade, Produtor)
+    if ($selOrd[0].Produtor -ne '12-2026-11-RECENTE - RESUMO') { throw "seletor: mais recente deveria vir primeiro, veio $($selOrd[0].Produtor)" }
+    if ($selOrd[1].Produtor -ne '2026-11-08-MEIO - RESUMO') { throw "seletor: ordem decrescente incorreta (2o): $($selOrd[1].Produtor)" }
+    if ($selOrd[2].Produtor -ne '05-2026-11-ANTIGO - RESUMO') { throw "seletor: ordem decrescente incorreta (3o): $($selOrd[2].Produtor)" }
+    if ($selOrd[3].Produtor -ne 'SEM DATA - RESUMO') { throw 'seletor: pasta sem data deveria ir ao fim' }
+
+    # 1af) seletor: marcação/desmarcação manual [T] persiste atômico no _processados.json (cria registro se ausente)
+    $okMark = Set-ProcessadosTransferidoManual -DestinoOD $pMeio.Local -Transferido $true -Cidade 'Jacupiranga' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta $pMeio.Produtor
+    if (-not $okMark) { throw 'seletor: marcacao manual deveria retornar true' }
+    $regM1 = @(Get-Content -LiteralPath $selRegPath -Raw | ConvertFrom-Json)
+    if ($regM1.Count -ne 3) { throw "seletor: marcacao deveria criar 1 registro sem apagar os outros (esperado 3, obtido $($regM1.Count))" }
+    $rMeio = $regM1 | Where-Object { $_.destino_onedrive -eq $pMeio.Local }
+    if ($rMeio.sincronizada -ne $true -or $rMeio.origem_registro -ne 'manual_sync' -or $rMeio.sincronizada_em -notmatch '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$') { throw 'seletor: registro manual criado incorreto' }
+    if (($regM1 | Where-Object { $_.destino_onedrive -eq $pRecente.Local }).sincronizada -ne $true) { throw 'seletor: marcacao apagou/alterou registro existente' }
+    if (Test-Path -LiteralPath "$selRegPath.tmp") { throw 'seletor: marcacao manual deixou .tmp residual' }
+    if (-not (Get-ProcessadosTransferidos).Contains($pMeio.Local.TrimEnd('\'))) { throw 'seletor: novo transferido nao detectado na releitura' }
+    # desmarcar: sincronizada volta a false e sincronizada_em a null (registro existente, atomico)
+    $okUnmark = Set-ProcessadosTransferidoManual -DestinoOD $pMeio.Local -Transferido $false -ProdutorPasta $pMeio.Produtor
+    if (-not $okUnmark) { throw 'seletor: desmarcacao manual deveria retornar true' }
+    $regM2 = @(Get-Content -LiteralPath $selRegPath -Raw | ConvertFrom-Json)
+    if ($regM2.Count -ne 3) { throw 'seletor: desmarcacao perdeu registros' }
+    $rMeio2 = $regM2 | Where-Object { $_.destino_onedrive -eq $pMeio.Local }
+    if ($rMeio2.sincronizada -ne $false -or $null -ne $rMeio2.sincronizada_em) { throw 'seletor: desmarcacao deveria por sincronizada=false e sincronizada_em=null' }
+    if ((Get-ProcessadosTransferidos).Contains($pMeio.Local.TrimEnd('\'))) { throw 'seletor: item desmarcado nao pode continuar transferido' }
+    if (Test-Path -LiteralPath "$selRegPath.tmp") { throw 'seletor: desmarcacao deixou .tmp residual' }
+    # desmarcar destino inexistente = no-op (nao cria registro)
+    if (Set-ProcessadosTransferidoManual -DestinoOD (Join-Path $selAtiv 'INEXISTENTE - RESUMO') -Transferido $false) { throw 'seletor: desmarcar inexistente deveria ser no-op (false)' }
+    if (@(Get-Content -LiteralPath $selRegPath -Raw | ConvertFrom-Json).Count -ne 3) { throw 'seletor: no-op criou registro indevido' }
+
+    # 1ag) Compare-TextoRelatorio: CRLF/espacos finais normalizados -> identico; diff -/+ quando muda
+    $cmpIg = Compare-TextoRelatorio -Antigo "Linha um`r`nLinha dois  `r`n" -Novo "Linha um`nLinha dois"
+    if (-not $cmpIg.Iguais) { throw 'diff: CRLF/espacos finais deveriam ser normalizados (identico)' }
+    $cmpDf = Compare-TextoRelatorio -Antigo "A`nB" -Novo "A`nC"
+    if ($cmpDf.Iguais) { throw 'diff: textos diferentes nao detectados' }
+    if ($cmpDf.Diff -notcontains '- B' -or $cmpDf.Diff -notcontains '+ C') { throw 'diff: resumo -/+ incorreto' }
+
+    # 1ah) fluxo somente-texto (-SomenteTexto): JSON -> TXT limpo no [OD], diff antes de sobrescrever, sem fotos/GPS
+    $paramST = @($AstT.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'SomenteTexto' })
+    if ($paramST.Count -ne 1) { throw 'somente-texto: parametro -SomenteTexto ausente' }
+    $txtScriptT = Get-Content -LiteralPath $ScriptTriagem -Raw
+    $iGuardST = $txtScriptT.IndexOf('if ($SomenteTexto) {')
+    $iEtapa2ST = $txtScriptT.IndexOf('ETAPA 2: BUSCA CIRURGICA')
+    if ($iGuardST -lt 0 -or $iGuardST -gt $iEtapa2ST) { throw 'somente-texto: deveria encerrar antes da Etapa 2 de fotos' }
+    $InboxBase = Join-Path $Tmp 'inbox6'
+    $leafST = Join-Path $InboxBase '2026\_inbox_relatorio_ater\11\Juquia\ATIVIDADE INDIVIDUAL 1\07-2026-11-SOMENTE TEXTO - RESUMO'
+    New-Item -ItemType Directory -Path $leafST -Force | Out-Null
+    $objST = [PSCustomObject]@{
+        metadados = [PSCustomObject]@{ data = '2026-11-07'; cidade = 'Juquia'; atividade = 'ATIVIDADE INDIVIDUAL 1'; produtor_pasta = '07-2026-11-SOMENTE TEXTO - RESUMO' }
+        institucional = [PSCustomObject]@{ entidade_executora = 'SA CONSULTORIA' }
+        relatorio = [PSCustomObject]@{ eixo_produtivo = 'Texto original.'; orientacoes_tecnicas = @('Adubar') }
+    }
+    $objST | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $leafST 'relatorio.json') -Encoding UTF8
+    $visST = Get-InboxVisitas
+    if (@($visST).Count -ne 1) { throw 'somente-texto: visita do JSON nao detectada' }
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas $visST)
+    $destST = $visST[0].CaminhoDestino
+    $txtPathST = Join-Path $destST 'relatorio.txt'
+    $txtST = Get-Content -LiteralPath $txtPathST -Raw
+    if ($txtST -match '---|\*\*' -or $txtST -notmatch 'Texto original') { throw 'somente-texto: TXT deveria ser limpo e gerado do JSON' }
+    if (Test-Path -LiteralPath (Join-Path $destST 'coordenadas_gps.txt')) { throw 'somente-texto: nao pode gerar GPS/fotos' }
+    if (@(Get-ChildItem -LiteralPath $destST -File | Where-Object { $_.Extension -in @('.jpg', '.jpeg', '.png', '.heic', '.mp4') }).Count -ne 0) { throw 'somente-texto: nao pode copiar fotos' }
+    $regPathST = Join-Path $InboxBase '2026\_inbox_relatorio_ater\_processados.json'
+    $regST = @(Get-Content -LiteralPath $regPathST -Raw | ConvertFrom-Json)
+    if ($regST.Count -ne 1 -or $regST[0].fotos_modo -ne 'pulado' -or $regST[0].fotos_copiadas -ne 0) { throw 'somente-texto: registro deveria nascer com fotos pulado (0 fotos)' }
+    # TXT identico (CRLF no disco) -> NAO regrava (LastWriteTime preservado)
+    Set-Content -LiteralPath $txtPathST -Value ($txtST -replace "`r?`n", "`r`n") -Encoding UTF8 -NoNewline
+    (Get-Item -LiteralPath $txtPathST).LastWriteTime = [datetime]'2026-01-01 00:00:00'
+    $vST2 = New-Visita -Data '2026-11-07' -Cidade 'Juquia' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta '07-2026-11-SOMENTE TEXTO - RESUMO' -SourceJson (Join-Path $leafST 'relatorio.json') -OrigemInbox $false
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas @($vST2))
+    if ((Get-Item -LiteralPath $txtPathST).LastWriteTime -ne [datetime]'2026-01-01 00:00:00') { throw 'diff: TXT identico nao deveria ser regravado' }
+    # JSON mudou -> diff detecta e atualiza com o conteudo gerado; registrado no triagem-log.txt
+    $objST.relatorio.eixo_produtivo = 'Texto atualizado.'
+    $objST | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $leafST 'relatorio.json') -Encoding UTF8
+    $vST3 = New-Visita -Data '2026-11-07' -Cidade 'Juquia' -Atividade 'ATIVIDADE INDIVIDUAL 1' -ProdutorPasta '07-2026-11-SOMENTE TEXTO - RESUMO' -SourceJson (Join-Path $leafST 'relatorio.json') -OrigemInbox $false
+    $null = Invoke-CriarPastasEArquivar -RelatorioDias (ConvertTo-RelatorioDias -Visitas @($vST3))
+    $txtST2 = Get-Content -LiteralPath $txtPathST -Raw
+    if ($txtST2 -notmatch 'Texto atualizado' -or $txtST2 -match 'Texto original') { throw 'diff: TXT deveria ser atualizado com o conteudo gerado do JSON' }
+    if ((Get-Content -LiteralPath $LogFile -Raw) -notmatch 'TXT ATUALIZADO \(diff\)') { throw 'diff: diff nao registrado no triagem-log.txt' }
+
     $Passou = $true
 } finally {
     Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue

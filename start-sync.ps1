@@ -264,7 +264,93 @@ function Update-ProcessadosSyncStatus {
     } catch { return 0 }   # G: offline/erro inesperado: nunca derruba o sync
 }
 
-# Opção [13]: lista visitas triadas separadas entre pendentes e sincronizadas
+# Extrai a data do prefixo da pasta ("DD-AAAA-MM-" ou "AAAA-MM-DD-") como [datetime].
+# Sem prefixo de data completa -> [datetime]::MinValue (vai para o fim na ordenação decrescente).
+function Get-DataPrefixoPasta {
+    param([string]$Nome)
+    if ($Nome -match '^(\d{2})-(\d{4})-(\d{2})-') {
+        try { return [datetime]::new([int]$Matches[2], [int]$Matches[3], [int]$Matches[1]) } catch { return [datetime]::MinValue }
+    }
+    if ($Nome -match '^(\d{4})-(\d{2})-(\d{2})-') {
+        try { return [datetime]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3]) } catch { return [datetime]::MinValue }
+    }
+    return [datetime]::MinValue
+}
+
+# Conjunto (case-insensitive, sem barra final) dos destino_onedrive com sincronizada=true
+# em TODOS os anos de $InboxBase. É o identificador único compartilhado com o seletor.
+function Get-ProcessadosTransferidos {
+    $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if (-not (Test-Path -LiteralPath $InboxBase)) { return $set }
+    foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })) {
+        $regPath = Join-Path $ano.FullName '_inbox_relatorio_ater\_processados.json'
+        if (-not (Test-Path -LiteralPath $regPath)) { continue }
+        try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { continue }
+        foreach ($r in $regs) {
+            $pd = $r.PSObject.Properties['destino_onedrive']
+            $ps = $r.PSObject.Properties['sincronizada']
+            if ($pd -and $pd.Value -and $ps -and $ps.Value) { [void]$set.Add(([string]$pd.Value).TrimEnd('\')) }
+        }
+    }
+    return $set
+}
+
+# Marca/desmarca manualmente um destino_onedrive como JÁ TRANSFERIDO no _processados.json.
+# - Existindo registro: atualiza sincronizada/sincronizada_em (null ao desmarcar), preservando os demais campos.
+# - Não existindo e Transferido=$true: cria entrada atômica com origem_registro="manual_sync" no ano da pasta.
+# - Não existindo e Transferido=$false: nada a fazer. Gravação atômica (.tmp + Move), nunca apaga outros registros.
+function Set-ProcessadosTransferidoManual {
+    param([string]$DestinoOD, [bool]$Transferido, [string]$Cidade = '', [string]$Atividade = '', [string]$ProdutorPasta = '')
+    if (-not $DestinoOD -or -not (Test-Path -LiteralPath $InboxBase)) { return $false }
+    $alvo = $DestinoOD.TrimEnd('\')
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    try {
+        foreach ($ano in @(Get-ChildItem -LiteralPath $InboxBase -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{4}$' })) {
+            $regPath = Join-Path $ano.FullName '_inbox_relatorio_ater\_processados.json'
+            if (-not (Test-Path -LiteralPath $regPath)) { continue }
+            try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { continue }
+            $mudou = $false
+            foreach ($r in $regs) {
+                $pd = $r.PSObject.Properties['destino_onedrive']
+                if (-not $pd -or -not $pd.Value) { continue }
+                if (([string]$pd.Value).TrimEnd('\') -ne $alvo) { continue }
+                Add-Member -InputObject $r -NotePropertyName sincronizada -NotePropertyValue $Transferido -Force
+                Add-Member -InputObject $r -NotePropertyName sincronizada_em -NotePropertyValue $(if ($Transferido) { $ts } else { $null }) -Force
+                $mudou = $true
+            }
+            if ($mudou) {
+                $tmp = "$regPath.tmp"
+                ConvertTo-Json -InputObject @($regs) -Depth 10 | Set-Content -LiteralPath $tmp -Encoding UTF8
+                Move-Item -LiteralPath $tmp -Destination $regPath -Force
+                return $true
+            }
+        }
+        # Sem registro prévio: só cria ao MARCAR como transferido (desmarcar algo inexistente = no-op)
+        if (-not $Transferido) { return $false }
+        $dataPasta = Get-DataPrefixoPasta $ProdutorPasta
+        $anoNovo = if ($dataPasta -gt [datetime]::MinValue) { $dataPasta.ToString('yyyy') } else { (Get-Date).ToString('yyyy') }
+        $dirAno = Join-Path $InboxBase "$anoNovo\_inbox_relatorio_ater"
+        if (-not (Test-Path -LiteralPath $dirAno)) { New-Item -ItemType Directory -Force -Path $dirAno | Out-Null }
+        $regPath = Join-Path $dirAno '_processados.json'
+        $regs = @()
+        if (Test-Path -LiteralPath $regPath) { try { $regs = @(Get-Content -LiteralPath $regPath -Raw -Encoding UTF8 | ConvertFrom-Json | Where-Object { $_ }) } catch { $regs = @() } }
+        $novo = [PSCustomObject]@{
+            destino_onedrive = $DestinoOD
+            cidade           = $Cidade
+            atividade        = $Atividade
+            produtor_pasta   = $ProdutorPasta
+            sincronizada     = $true
+            sincronizada_em  = $ts
+            origem_registro  = 'manual_sync'
+        }
+        $tmp = "$regPath.tmp"
+        ConvertTo-Json -InputObject @(@($regs) + $novo) -Depth 10 | Set-Content -LiteralPath $tmp -Encoding UTF8
+        Move-Item -LiteralPath $tmp -Destination $regPath -Force
+        return $true
+    } catch { return $false }   # G: offline/erro inesperado: nunca derruba o seletor
+}
+
+# Opção [11]: lista visitas triadas separadas entre pendentes e sincronizadas
 function Show-ProcessadosStatus {
     Write-Host "`n=== STATUS DAS VISITAS TRIADAS ([GD] _processados.json -> [OD] -> [GDSA]) ===" -ForegroundColor Cyan
     if (-not (Test-Path -LiteralPath $InboxBase)) {
@@ -400,15 +486,17 @@ function Invoke-RcloneCopy {
     }
 }
 
-# Seletor TUI: Cidade > Atividade > Produtor (setas + Espaço + A/D/S/I/H/Q)
+# Seletor TUI: Cidade > Atividade > Produtor (setas + Espaço + A/D/S/T/H/Q)
+# "Já transferido" é unificado no _processados.json (destino_onedrive = chave única), substituindo o [I] Ignorar.
 function Show-ProdutoresSelector {
-    $Ignorados = Get-Ignorados
+    $Transferidos = Get-ProcessadosTransferidos
     $Itens = New-Object System.Collections.ArrayList
 
     foreach ($P in (Get-Produtores)) {
         [void]$Itens.Add([PSCustomObject]@{
             Selecionado = $false
-            Ignorado    = ($Ignorados -contains $P.Relativo)
+            Transferido = $Transferidos.Contains($P.Local.TrimEnd('\'))
+            Data        = (Get-DataPrefixoPasta $P.Produtor)
             Cidade      = $P.Cidade
             Atividade   = $P.Atividade
             Produtor    = $P.Produtor
@@ -420,6 +508,10 @@ function Show-ProdutoresSelector {
         })
     }
 
+    # Mais recentes primeiro: data do prefixo (DD-AAAA-MM-/AAAA-MM-DD-) decrescente, depois Cidade/Atividade/Nome.
+    # Pastas sem data completa (Data = MinValue) vão para o fim.
+    $Itens = @($Itens | Sort-Object -Property @{ Expression = 'Data'; Descending = $true }, Cidade, Atividade, Produtor)
+
     if ($Itens.Count -eq 0) {
         Write-Host "`n[AVISO] Nenhuma pasta de produtor encontrada em $OrigemBase" -ForegroundColor Yellow
         return
@@ -428,27 +520,30 @@ function Show-ProdutoresSelector {
     $Atual  = 0
     $Offset = 0
     $Altura = 20
-    $MostrarIgnorados = $false
+    $MostrarTransferidos = $false
     try { $Altura = [Math]::Max(8, $Host.UI.RawUI.WindowSize.Height - 15) } catch { }
     try { [Console]::CursorVisible = $false } catch { }
 
     try {
         while ($true) {
-            # Ignorados vão para o fim e só aparecem com [H]
-            $Visiveis = @($Itens | Where-Object { -not $_.Ignorado })
-            if ($MostrarIgnorados) { $Visiveis += @($Itens | Where-Object { $_.Ignorado }) }
+            # Já transferidos ficam ocultos por padrão e só aparecem no fim da lista com [H]
+            $Visiveis = @($Itens | Where-Object { -not $_.Transferido })
+            if ($MostrarTransferidos) { $Visiveis += @($Itens | Where-Object { $_.Transferido }) }
             if ($Atual -gt ($Visiveis.Count - 1)) { $Atual = $Visiveis.Count - 1 }
             if ($Atual -lt 0) { $Atual = 0 }
 
             Clear-Host
             $Marcados = @($Visiveis | Where-Object { $_.Selecionado }).Count
-            $QtdIgnorados = @($Itens | Where-Object { $_.Ignorado }).Count
+            $QtdTransferidos = @($Itens | Where-Object { $_.Transferido }).Count
 
             Write-Host ("=" * 74) -ForegroundColor Cyan
             Write-Host " SELETOR DE PRODUTORES - OneDrive -> Google Drive    Marcados: $Marcados / $($Visiveis.Count)" -ForegroundColor White
+            if (-not $MostrarTransferidos -and $QtdTransferidos -gt 0) {
+                Write-Host " $QtdTransferidos pasta(s) oculta(s) por já transferida(s) - [H] para exibir" -ForegroundColor DarkGray
+            }
             Write-Host ("=" * 74) -ForegroundColor Cyan
             Write-Host " [Setas] Navegar | [Espaco] Marcar | [A] Todos/Nenhum | [D] Dry-Run | [S] Sincronizar" -ForegroundColor Yellow
-            Write-Host " [I] Ignorar esta atividade | [H] Mostrar/Ocultar ignorados ($QtdIgnorados) | [Q/Esc] Voltar" -ForegroundColor Yellow
+            Write-Host " [T] Marcar/desmarcar JÁ TRANSFERIDO | [H] Mostrar/Ocultar já transferidos ($QtdTransferidos) | [Q/Esc] Voltar" -ForegroundColor Yellow
             Write-Host ("-" * 74) -ForegroundColor Cyan
 
             if ($Atual -lt $Offset) { $Offset = $Atual }
@@ -466,11 +561,11 @@ function Show-ProdutoresSelector {
                 }
                 $Check = if ($Item.Selecionado) { "[X]" } else { "[ ]" }
                 $Seta  = if ($i -eq $Atual) { " > " } else { "   " }
-                $Marca = if ($Item.Ignorado) { "[IGNORADO] " } else { "" }
+                $Marca = if ($Item.Transferido) { "[TRANSFERIDO] " } else { "" }
                 $Linha = "$Seta$Check $Marca$($Item.Produtor) -> $($Item.NomeDrive)  ($($Item.QtdArquivos) arq.)"
 
                 if ($i -eq $Atual) { Write-Host $Linha -ForegroundColor Black -BackgroundColor Gray }
-                elseif ($Item.Ignorado) { Write-Host $Linha -ForegroundColor DarkGray }
+                elseif ($Item.Transferido) { Write-Host $Linha -ForegroundColor DarkGray }
                 elseif ($Item.Selecionado) { Write-Host $Linha -ForegroundColor Green }
                 else { Write-Host $Linha -ForegroundColor White }
             }
@@ -483,28 +578,32 @@ function Show-ProdutoresSelector {
                 "DownArrow" { if ($Atual -lt ($Visiveis.Count - 1)) { $Atual++ } }
                 "Spacebar"  { if ($Visiveis.Count -gt 0) { $Visiveis[$Atual].Selecionado = -not $Visiveis[$Atual].Selecionado } }
                 "A" {
-                    $NovoEstado = ($Marcados -lt $Visiveis.Count)
-                    foreach ($It in $Visiveis) { if (-not $It.Ignorado) { $It.Selecionado = $NovoEstado } }
+                    $PendVis = @($Visiveis | Where-Object { -not $_.Transferido })
+                    $NovoEstado = (@($PendVis | Where-Object { $_.Selecionado }).Count -lt $PendVis.Count)
+                    foreach ($It in $PendVis) { $It.Selecionado = $NovoEstado }
                 }
-                "H" { $MostrarIgnorados = -not $MostrarIgnorados; $Atual = 0; $Offset = 0 }
-                "I" {
+                "H" { $MostrarTransferidos = -not $MostrarTransferidos; $Atual = 0; $Offset = 0 }
+                "T" {
                     if ($Visiveis.Count -eq 0) { continue }
                     $Item = $Visiveis[$Atual]
-                    $Lista = Get-Ignorados
-                    if ($Item.Ignorado) {
-                        Save-Ignorados @($Lista | Where-Object { $_ -ne $Item.Relativo })
-                        $Item.Ignorado = $false
-                        Write-Host "`n[OK] '$($Item.Relativo)' voltou a ser sincronizado." -ForegroundColor Green
-                    } else {
-                        Save-Ignorados (@($Lista) + $Item.Relativo)
-                        $Item.Ignorado = $true
+                    $novo = -not $Item.Transferido
+                    $ok = Set-ProcessadosTransferidoManual -DestinoOD $Item.Local -Transferido $novo -Cidade $Item.Cidade -Atividade $Item.Atividade -ProdutorPasta $Item.Produtor
+                    if (-not $ok) {
+                        Write-Host "`n[!] Não foi possível gravar no _processados.json (G: offline?)." -ForegroundColor Red
+                        Start-Sleep -Milliseconds 1200
+                        continue
+                    }
+                    $Item.Transferido = $novo
+                    if ($novo) {
                         $Item.Selecionado = $false
-                        Write-Host "`n[OK] '$($Item.Relativo)' ignorado (nao sera sincronizado)." -ForegroundColor DarkGray
+                        Write-Host "`n[OK] '$($Item.Produtor)' marcado como JÁ TRANSFERIDO." -ForegroundColor DarkGray
+                    } else {
+                        Write-Host "`n[OK] '$($Item.Produtor)' voltou para a lista de pendentes." -ForegroundColor Green
                     }
                     Start-Sleep -Milliseconds 900
                 }
                 { $_ -in "D", "S" } {
-                    $Alvos = @($Visiveis | Where-Object { $_.Selecionado -and -not $_.Ignorado })
+                    $Alvos = @($Visiveis | Where-Object { $_.Selecionado })
                     if ($Alvos.Count -eq 0) {
                         Write-Host "`n[!] Marque pelo menos um produtor com a barra de Espaco." -ForegroundColor Red
                         Start-Sleep -Milliseconds 1200
@@ -552,6 +651,11 @@ function Show-ProdutoresSelector {
                     Write-SyncRun -Escopo 'SELETOR' -Modificados $ModSel -Simulacao $Simular
                     if (-not $Simular) {
                         $null = Update-ProcessadosSyncStatus -Sincronizadas $SyncOkSel   # exibe [OK] + Registro [GD] internamente
+                        # Reflete imediatamente na tela ao voltar: itens sincronizados ficam Transferido=true
+                        foreach ($okItem in $SyncOkSel) {
+                            $match = $Itens | Where-Object { $_.Local.TrimEnd('\') -eq $okItem.Local.TrimEnd('\') } | Select-Object -First 1
+                            if ($match) { $match.Transferido = $true; $match.Selecionado = $false }
+                        }
                     }
 
                     if ($Simular) {
@@ -632,6 +736,10 @@ function Update-RcloneBinario {
 }
 
 # ================= FUNÇÃO DE SINCRONIZAÇÃO =================
+# Envio em LOTE (todas as cidades ou uma cidade via -ApenasCidade). Foi REMOVIDO do menu interativo
+# (antigas opções [2]/[3]) para priorizar o Seletor de Produtores, mas a função e o parâmetro -Auto
+# permanecem INTACTOS: o lote fica reservado para a execução automática (Agendador de Tarefas) e
+# para uso futuro. O dry-run do menu [1] ainda a utiliza com -Simulacao $true.
 function Invoke-AterSync {
     param(
         [bool]$Simulacao = $false,
@@ -656,7 +764,7 @@ function Invoke-AterSync {
     # Pré-checagem: remote configurado? Evita 15 erros CRITICAL idênticos
     if (-not (Test-RemoteConfigurado)) {
         Write-Host "`n[ERRO] Remote '$NomeRemoto' não configurado no rclone." -ForegroundColor Red
-        Write-Host "       Use a opção [9] do menu (Configurar rclone)." -ForegroundColor Yellow
+        Write-Host "       Use a opção [7] do menu (Configurar rclone)." -ForegroundColor Yellow
         return $false
     }
 
@@ -789,19 +897,17 @@ do {
     Write-Host " Agendar: $StatusAgenda" -ForegroundColor DarkGreen
     Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
     Write-Host " [1] Verificar alterações (Dry-Run / simulação segura)" -ForegroundColor Yellow
-    Write-Host " [2] Sincronizar AGORA (todas as cidades)" -ForegroundColor Green
-    Write-Host " [3] Sincronizar UMA cidade específica" -ForegroundColor Green
-    Write-Host " [4] Selecionar produtores (setas/Espaco/D/S)" -ForegroundColor White
-    Write-Host " [5] Ver últimas linhas do log" -ForegroundColor White
-    Write-Host " [6] Abrir pasta de Logs" -ForegroundColor White
-    Write-Host " [7] Testar conexão com [GDSA] (Google Drive SA Consultoria)" -ForegroundColor White
+    Write-Host " [2] Selecionar produtores (setas/Espaco/D/S/T/H)" -ForegroundColor White
+    Write-Host " [3] Ver últimas linhas do log" -ForegroundColor White
+    Write-Host " [4] Abrir pasta de Logs" -ForegroundColor White
+    Write-Host " [5] Testar conexão com [GDSA] (Google Drive SA Consultoria)" -ForegroundColor White
     Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host " [8] Testar rclone (versão e remotes)" -ForegroundColor Magenta
-    Write-Host " [9] Configurar rclone (rclone config)" -ForegroundColor Magenta
-    Write-Host "[10] Agendar tarefa (a cada 5 min)" -ForegroundColor Magenta
-    Write-Host "[11] Remover agendamento" -ForegroundColor Magenta
-    Write-Host "[12] Atualizar rclone" -ForegroundColor Magenta
-    Write-Host "[13] Status de visitas ([GD] _processados.json -> [OD] -> [GDSA])" -ForegroundColor Magenta
+    Write-Host " [6] Testar rclone (versão e remotes)" -ForegroundColor Magenta
+    Write-Host " [7] Configurar rclone (rclone config)" -ForegroundColor Magenta
+    Write-Host " [8] Agendar tarefa (a cada 5 min)" -ForegroundColor Magenta
+    Write-Host " [9] Remover agendamento" -ForegroundColor Magenta
+    Write-Host "[10] Atualizar rclone" -ForegroundColor Magenta
+    Write-Host "[11] Status de visitas ([GD] _processados.json -> [OD] -> [GDSA])" -ForegroundColor Magenta
     Write-Host " [0] Sair" -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Cyan
 
@@ -815,23 +921,6 @@ do {
             Read-Host "Pressione Enter para voltar ao menu"
         }
         "2" {
-            Invoke-AterSync -Simulacao $false
-            Clear-KeyBuffer
-            Read-Host "Pressione Enter para voltar ao menu"
-        }
-        "3" {
-            Write-Host "`nCidades disponíveis:" -ForegroundColor Cyan
-            for ($i = 0; $i -lt $Cidades.Count; $i++) { Write-Host " [$($i+1)] $($Cidades[$i])" -ForegroundColor White }
-            $Escolha = Read-Host "Número da cidade (Enter cancela)"
-            if ($Escolha -match '^\d+$' -and [int]$Escolha -ge 1 -and [int]$Escolha -le $Cidades.Count) {
-                $CidadeSel = $Cidades[[int]$Escolha - 1]
-                Invoke-AterSync -Simulacao $false -ApenasCidade $CidadeSel -Escopo ("CIDADE_" + ($CidadeSel -replace '\s+', '_'))
-            } else {
-                Write-Host "Cancelado." -ForegroundColor Yellow
-            }
-            Read-Host "Pressione Enter para voltar ao menu"
-        }
-        "4" {
             if (-not (Test-Path $OrigemBase)) {
                 Write-Host "`n[ERRO] Pasta base do OneDrive não encontrada: $OrigemBase" -ForegroundColor Red
                 Read-Host "Pressione Enter para voltar ao menu"
@@ -839,23 +928,23 @@ do {
                 Show-ProdutoresSelector   # volta ao menu ao apertar Q/Esc
             }
         }
-        "5" {
+        "3" {
             Show-UltimoLog
             Read-Host "`nPressione Enter para voltar ao menu"
         }
-        "6" {
+        "4" {
             if (Test-Path $LogDir) { Invoke-Item $LogDir }
             else { Write-Host "Pasta de logs ainda vazia." -ForegroundColor Yellow; Start-Sleep 2 }
         }
-        "7" {
+        "5" {
             Write-Host "`nListando pastas dentro de VALE DO RIBEIRA/FERNANDO..." -ForegroundColor Cyan
             rclone lsd "$RemotoDrive" --drive-shared-with-me
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "`n[ERRO] Falha ao acessar o Drive. Verifique a configuração (opção [8]/[9])." -ForegroundColor Red
+                Write-Host "`n[ERRO] Falha ao acessar o Drive. Verifique a configuração (opção [6]/[7])." -ForegroundColor Red
             }
             Read-Host "`nPressione Enter para voltar ao menu"
         }
-        "8" {
+        "6" {
             Write-Host "`n=== STATUS DO RCLONE ===" -ForegroundColor Cyan
             rclone version
             Write-Host "`n--- Remotes configurados ---" -ForegroundColor Cyan
@@ -864,7 +953,7 @@ do {
             rclone config redacted
             Read-Host "`nPressione Enter para voltar ao menu"
         }
-        "9" {
+        "7" {
             Write-Host "`nAbrindo configurador do rclone..." -ForegroundColor Cyan
             Write-Host "  n | name: $NomeRemoto | drive | client_id: (Enter) | client_secret: (Enter)" -ForegroundColor Gray
             Write-Host "  scope: 1 | service_account: (Enter) | Edit advanced: n | shared client_id: y" -ForegroundColor Gray
@@ -872,19 +961,19 @@ do {
             rclone config
             Read-Host "`nPressione Enter para voltar ao menu"
         }
-        "10" {
+        "8" {
             Register-SyncTask
             Read-Host "Pressione Enter para voltar ao menu"
         }
-        "11" {
+        "9" {
             Unregister-SyncTask
             Read-Host "Pressione Enter para voltar ao menu"
         }
-        "12" {
+        "10" {
             Update-RcloneBinario
             Read-Host "Pressione Enter para voltar ao menu"
         }
-        "13" {
+        "11" {
             Show-ProcessadosStatus
             Read-Host "`nPressione Enter para voltar ao menu"
         }

@@ -232,10 +232,37 @@ Ao final de `[2]`, `[3]`, `[4]` ou `-Auto`, o script identifica **apenas** as pa
 Script separado que alimenta o OneDrive a partir das fotos do celular (via **Syncthing**), antes do `start-sync.ps1` subir tudo ao Drive. Arquitetura completa em [`.plan/Triagem-de-Fotos-no-Campo.md`](.plan/Triagem-de-Fotos-no-Campo.md).
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1"          # lê visitas.json se existir
-pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar    # força colar o JSON no terminal (FIM encerra)
-pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Conferir # lista já processadas, confere TXT/fotos e reprocessa
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1"               # menu inicial de modos (após o resumo do histórico + varredura física da inbox)
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -SomenteTexto # só textos + anexos ATV 1 (sem fotos/GPS)
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Colar        # força colar o JSON no terminal (FIM encerra)
+pwsh -ExecutionPolicy Bypass -File ".\triagem-campo.ps1" -Conferir     # lista já processadas, confere TXT/fotos e reprocessa
 ```
+
+### Menu inicial de modos e modo somente-texto
+
+Sem `-Colar`/`-Conferir`/`-SomenteTexto`, logo após o resumo do `_processados.json` e a varredura física da inbox `[GD]` (pastas `NOVA` / `TRIADA - PENDENTE SYNC` / `SINCRONIZADA`), o script exibe:
+
+```
+ [1] Somente TEXTOS e anexos ATV 1 ([GD] -> [OD]) — cria pastas, gera TXT do JSON com diff e pula fotos
+ [2] Triagem COMPLETA (Textos + Fotos/GPS)
+ [3] Conferir / Reprocessar visitas existentes
+ [4] Colar JSON manual
+ [0] Sair
+```
+
+No modo **`[1]` / `-SomenteTexto`**, após a Etapa 1 (pastas criadas/verificadas, TXTs gravados/atualizados via diff, anexos ATV 1 copiados e `_processados.json` atualizado) o script **encerra sem a Etapa 2 de fotos**, salva o manifesto em `runs\...__TRIAGEM__triagem-campo.json` com `fotos = 0` e orienta: *"Triagem de TEXTOS concluida! Para enviar agora ao [GDSA], rode `.\start-sync.ps1` (ou rode `.\triagem-campo.ps1 -Conferir` depois para anexar as fotos)."*
+
+### Diff do `.txt` no OneDrive (nunca sobrescreve às cegas)
+
+O corpo do relatório é gerado **do `.json`** via `ConvertFrom-RelatorioJson` (sem YAML/Markdown/seção 10; sem JSON legível, limpa o `.txt` da inbox — e o par `.txt` com YAML na inbox `[GD]` é garantido via `Write-TxtInboxDoJson`). Antes de gravar, a pasta de destino é verificada (`[CRIADA] [OD]` vs. `[JA EXISTE] [OD]`, sempre com o caminho completo) e o `.txt` existente é comparado por `Compare-TextoRelatorio` (normaliza `\r\n` → `\n` e espaços finais por linha):
+
+| Situação | Saída | Ação |
+| :--- | :--- | :--- |
+| `.txt` não existe no `[OD]` | `[TXT CRIADO] [OD]` | grava o corpo gerado |
+| Conteúdo idêntico | `[TXT IDENTICO] [OD] — mantido sem alteracao` | **não sobrescreve** (registrado no log) |
+| Conteúdo diferente | `[TXT ATUALIZADO (diff)] [OD]` + resumo `-`/`+` | sobrescreve com o conteúdo do JSON; diff no terminal e no `triagem-log.txt` |
+
+A mesma verificação vale no reparo do `-Conferir` (`Repair-VisitaTxtAnexos`).
 
 ### Fonte primária: inbox espelhada (`.txt` + `.json`)
 
@@ -271,7 +298,7 @@ Antes de tocar no disco, o script abre uma lista navegável com `[Console]::Read
 
 `try/finally` garante que `[Console]::CursorVisible` volte a `$true` ao sair. Só depois da confirmação (`S`):
 - cria `Cidade\Atividade\AAAA-MM-DD-PRODUTOR - RESUMO` no `$OneDriveBase`;
-- grava **apenas o `.txt` limpo** (remove o bloco YAML `---…---` do topo, pronto para colar no Word) na pasta do produtor; o **`.json` original permanece somente na inbox** do Drive pessoal (não é copiado para o OneDrive);
+- grava **apenas o `.txt` limpo** (gerado do `.json`, sem YAML/Markdown/seção 10, pronto para colar no Word) na pasta do produtor, **com diff antes de sobrescrever** (`[TXT CRIADO]` / `[TXT IDENTICO]` / `[TXT ATUALIZADO (diff)]` — veja acima); o **`.json` original permanece somente na inbox** do Drive pessoal (não é copiado para o OneDrive);
 - **anexos automáticos só na `ATIVIDADE INDIVIDUAL 1`** (case-insensitive): imagens `.png`/`.jpg`/`.jpeg` da pasta da visita cujo nome contenha `mapa` ou `calendario` (regex `mapa|c?alend[aá]rio`, tolera `alendario-agricola.png`) são **copiadas** junto — ex.: `... - Mapa.png`, `... - Mapa.jpeg`, `calendario-agricola.png`. Da ATV 2 em diante, não busca anexos;
 - **cópia não-destrutiva**: nada é movido/apagado da inbox (`.txt`, `.json`, `.gdoc`, imagens ficam intactos no `G:`); em vez da antiga árvore `_processados\`, cada visita processada ganha um registro **append** no arquivo único `G:\Meu Drive\<AAAA>\_inbox_relatorio_ater\_processados.json` com `processado_em`, `pasta_inbox`, `data`, `cidade`, `atividade`, `produtor_pasta`, `destino_onedrive`, `arquivos_levados`, o rastreio de fotos **`fotos_modo` (`automatico`/`individual`/`manual`/`pulado`), `fotos_copiadas`, `fotos_origem_sugerida`** (atualizados ao fim da Etapa 2) e o rastreio de envio **`sincronizada: false`, `sincronizada_em: null`, `drive_url: null`**. Gravação **atômica** (`.tmp` + `Move-Item -Force`), preservando todos os registros/campos existentes. O `Get-InboxVisitas` consulta esse registro e pula as pastas já processadas (idempotência). No início da triagem, um resumo do ano atual é exibido: `Historico 2026: X visita(s) triadas | Y sincronizada(s) | Z pendente(s) de envio`.
 

@@ -43,9 +43,13 @@ Tira os arquivos brutos da pasta do Syncthing (liberando memória no celular) e 
 Cruza os relatórios da inbox (`G:`) com as fotos do dia, cria as pastas no OneDrive e gera `coordenadas_gps.txt`:
 
 ```powershell
-.\triagem-campo.ps1
+.\triagem-campo.ps1                # menu inicial de modos
+.\triagem-campo.ps1 -SomenteTexto  # direto: só textos + anexos ATV 1 (sem fotos)
 ```
 
+* **Menu inicial** (após o resumo do ano + varredura da inbox): **`[1]`** Somente TEXTOS e anexos ATV 1 (cria pastas, gera TXT do JSON com diff e **pula fotos**) · **`[2]`** Triagem COMPLETA (Textos + Fotos/GPS) · **`[3]`** Conferir/reprocessar · **`[4]`** Colar JSON manual · **`[0]`** Sair.
+* **Modo `[1]` / `-SomenteTexto`:** encerra após os textos (manifesto em `runs\` com `fotos = 0`) e orienta: rode `.\start-sync.ps1` para enviar ao `[GDSA]` agora, ou `.\triagem-campo.ps1 -Conferir` depois para anexar as fotos.
+* **TXT com diff no OneDrive:** pasta existente é avisada (`[JA EXISTE] [OD]`); se o `.txt` já existe, é comparado antes de sobrescrever — **idêntico** → `[TXT IDENTICO]` (mantido sem alteração); **diferente** → `[TXT ATUALIZADO (diff)]` com resumo `-`/`+` das linhas, registrado no `triagem-log.txt`.
 * **Tela 1 (Relatórios):** Confira as visitas (`E` edita, `D` remove) → aperte **`C` / `Enter`** e confirme **`S`**.
 * Rodou de novo e **tudo já estava triado**? Ele avisa (nada de tela estranha de colar JSON) e oferece **`C`** = Conferir/reprocessar as visitas anteriores, **`M`** = colar JSON manual, **`Q`** = sair.
 * **Tela 2 (Fotos):** O script mostra a **média de horário das fotos vs o horário do relatório** e sugere o produtor (mesmo sem `hora_fim`, caso dos relatórios de áudio) → aperte **`Enter` ou `S`** para aceitar (ou digite a letra do produtor / `P` para pular / `I` foto a foto).
@@ -62,7 +66,7 @@ Faltou o TXT na pasta do produtor? Apagou fotos sem querer (ou quer manter só a
 ```
 
 * Mostra cada visita com **TXT: OK/FALTA** e **fotos: X no destino / Y registradas**.
-* **`T`** = recopia o TXT limpo + anexos da ATV 1 do Drive pessoal `[GD]` · **`F`** = lista as fotos que faltam e pergunta se copia (**S/N** — `N` mantém como está, sem forçar fotos a mais) · **`A`** = ambos · **`P`** = pular · **`Q`** = sair.
+* **`T`** = recopia o TXT limpo (com diff: idêntico é mantido) + anexos da ATV 1 do Drive pessoal `[GD]` · **`F`** = lista as fotos que faltam e pergunta se copia (**S/N** — `N` mantém como está, sem forçar fotos a mais) · **`A`** = ambos · **`P`** = pular · **`Q`** = sair.
 * **Dia com 2+ pastas de fotos e sem origem registrada?** Ao pedir fotos (`F`/`A`), o seletor de lotes abre para você marcar **qual pasta pertence àquela visita** — a escolha é gravada em `fotos_origem_sugerida` no `_processados.json` e as pastas do dia **nunca são misturadas** automaticamente.
 
 ### Passo 3 — Enviar para o Google Drive da Consultoria (`start-sync.ps1`)

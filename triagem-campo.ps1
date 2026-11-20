@@ -13,6 +13,9 @@
     nome *AAAAMMDD*). Visitas ja viram lotes pre-agrupados; avulsas agrupam por 40 min.
     Pre-sugere o produtor por horario/periodo (Enter ou S aceita), distribui por TAG e gera
     coordenadas_gps.txt. Registra manifesto de auditoria em runs\ (nunca apagado).
+.PARAMETER SomenteTexto
+    Modo somente-texto: cria pastas no [OD], gera/atualiza o .txt limpo do JSON (com diff
+    antes de sobrescrever) e copia anexos ATV 1, sem entrar na Etapa 2 de fotos/GPS.
 .PARAMETER Colar
     Forca colagem do JSON no terminal (ignora inbox e visitas.json).
 .PARAMETER Conferir
@@ -31,6 +34,7 @@
 param(
     [switch]$Colar,
     [switch]$Conferir,
+    [switch]$SomenteTexto,
     [string]$VisitasJson = "$PSScriptRoot\visitas.json"
 )
 
@@ -250,6 +254,51 @@ function Write-TxtInboxDoJson {
     Move-Item -LiteralPath $tmp -Destination $txtPath -Force
     Write-TriagemLog "MONTADO TXT [GD] do JSON: $txtPath"
     return $txtPath
+}
+
+# Compara o .txt existente no [OD] com o corpo gerado do JSON, normalizando CRLF -> LF e
+# espacos finais por linha (e newline final). Iguais -> nao regrava; diferentes -> resumo
+# objetivo das linhas removidas (-) / adicionadas (+).
+# ponytail: diff por conjunto de linhas (sem LCS/alinhamento); trocar por diff real se precisar de contexto.
+function Compare-TextoRelatorio {
+    param([string]$Antigo, [string]$Novo)
+    $normalizar = {
+        param([string]$t)
+        if ($null -eq $t) { return '' }
+        $linhas = @(($t -replace "`r`n", "`n") -split "`n" | ForEach-Object { $_.TrimEnd() })
+        return (($linhas -join "`n").TrimEnd("`n"))
+    }
+    $a = & $normalizar $Antigo
+    $b = & $normalizar $Novo
+    if ($a -ceq $b) { return [PSCustomObject]@{ Iguais = $true; Diff = @() } }
+    $la = @($a -split "`n"); $lb = @($b -split "`n")
+    $diff = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in $la) { if ($lb -cnotcontains $l) { $diff.Add("- $l") } }
+    foreach ($l in $lb) { if ($la -cnotcontains $l) { $diff.Add("+ $l") } }
+    return [PSCustomObject]@{ Iguais = $false; Diff = @($diff) }
+}
+
+# Grava o .txt limpo no [OD] com verificacao previa: cria, mantem identico ou atualiza via diff
+# (resumo no terminal + triagem-log.txt). Nunca sobrescreve conteudo identico.
+function Write-TxtDestinoComDiff {
+    param([string]$Dest, [string]$NomeTxt, [string]$Body)
+    $txtPath = Join-Path $Dest $NomeTxt
+    if (-not (Test-Path -LiteralPath $txtPath)) {
+        Set-Content -LiteralPath $txtPath -Value $Body -Encoding UTF8
+        Write-Host "  [TXT CRIADO] [OD] $txtPath" -ForegroundColor Green
+        Write-TriagemLog "TXT CRIADO [OD]: $txtPath"
+        return
+    }
+    $cmp = Compare-TextoRelatorio -Antigo (Get-Content -LiteralPath $txtPath -Raw -Encoding UTF8) -Novo $Body
+    if ($cmp.Iguais) {
+        Write-Host "  [TXT IDENTICO] [OD] — mantido sem alteracao: $txtPath" -ForegroundColor DarkGray
+        Write-TriagemLog "TXT IDENTICO [OD] (mantido sem alteracao): $txtPath"
+        return
+    }
+    Write-Host "  [TXT ATUALIZADO (diff)] [OD] $txtPath" -ForegroundColor Yellow
+    foreach ($d in $cmp.Diff) { Write-Host "      $d" -ForegroundColor DarkGray }
+    Set-Content -LiteralPath $txtPath -Value $Body -Encoding UTF8
+    Write-TriagemLog "TXT ATUALIZADO (diff) [OD]: $txtPath | $($cmp.Diff -join ' | ')"
 }
 
 function New-Visita {
@@ -1111,28 +1160,27 @@ function Repair-VisitaTxtAnexos {
         return , @()
     }
     if (-not (Test-Path -LiteralPath $dest)) { New-Item -ItemType Directory -Force -Path $dest | Out-Null }
+    # Corpo: prioridade do .json (schema 1.0); sem JSON legivel, limpa o .txt da inbox.
+    # Grava no [OD] via diff (identico -> mantido; diferente -> atualiza) e garante o par YAML na inbox.
+    $json = Get-ChildItem -LiteralPath $inbox -File -Filter '*.json' | Select-Object -First 1
     $txt = Get-ChildItem -LiteralPath $inbox -File -Filter '*.txt' | Select-Object -First 1
-    if ($txt) {
-        $body = Remove-Secao10 (Remove-MarkdownBasico (Remove-YamlHeader (Get-Content -LiteralPath $txt.FullName -Raw -Encoding UTF8)))
-        Set-Content -LiteralPath (Join-Path $dest $txt.Name) -Value $body -Encoding UTF8
-        $levados.Add($txt.Name)
-        Write-Host "  [OK] TXT limpo [GD] -> [OD]: $(Join-Path $dest $txt.Name)" -ForegroundColor Green
-        Write-TriagemLog "REPROCESSO TXT [GD]: $($txt.FullName) -> [OD]: $(Join-Path $dest $txt.Name)"
-    } else {
-        # Sem .txt na inbox: monta do JSON (schema 1.0), grava o par com YAML na inbox e o limpo no [OD]
-        $json = Get-ChildItem -LiteralPath $inbox -File -Filter '*.json' | Select-Object -First 1
-        if ($json) {
+    $body = $null; $nomeTxt = $null
+    if ($json) {
+        $body = ConvertFrom-RelatorioJson -Json $json.FullName
+        if ($body) {
             $null = Write-TxtInboxDoJson -JsonPath $json.FullName
-            $body = ConvertFrom-RelatorioJson -Json $json.FullName
-            if ($body) {
-                $nomeTxt = [System.IO.Path]::GetFileNameWithoutExtension($json.Name) + '.txt'
-                Set-Content -LiteralPath (Join-Path $dest $nomeTxt) -Value $body -Encoding UTF8
-                $levados.Add($nomeTxt)
-                Write-Host "  [OK] TXT montado do JSON [GD] -> [OD]: $(Join-Path $dest $nomeTxt)" -ForegroundColor Green
-                Write-TriagemLog "REPROCESSO TXT DO JSON [GD]: $($json.FullName) -> [OD]: $(Join-Path $dest $nomeTxt)"
-            } else { Write-Host "  [!] JSON sem relatorio legivel: $($json.FullName)" -ForegroundColor Yellow }
-        } else { Write-Host "  [!] Nenhum .txt/.json na inbox [GD]: $inbox" -ForegroundColor Yellow }
+            $nomeTxt = [System.IO.Path]::GetFileNameWithoutExtension($json.Name) + '.txt'
+        }
     }
+    if (-not $body -and $txt) {
+        $body = Remove-Secao10 (Remove-MarkdownBasico (Remove-YamlHeader (Get-Content -LiteralPath $txt.FullName -Raw -Encoding UTF8)))
+        $nomeTxt = $txt.Name
+    }
+    if ($body) {
+        Write-TxtDestinoComDiff -Dest $dest -NomeTxt $nomeTxt -Body $body
+        $levados.Add($nomeTxt)
+        Write-TriagemLog "REPROCESSO TXT [GD]: $inbox -> [OD]: $(Join-Path $dest $nomeTxt)"
+    } else { Write-Host "  [!] Nenhum .txt/.json legivel na inbox [GD]: $inbox" -ForegroundColor Yellow }
     if ([string]$Registro.atividade -ieq 'ATIVIDADE INDIVIDUAL 1') {
         foreach ($a in @(Get-ChildItem -LiteralPath $inbox -File | Where-Object {
             $_.Extension -in @('.png', '.jpg', '.jpeg') -and $_.BaseName -match 'mapa|c?alend[aá]rio'
@@ -1360,17 +1408,22 @@ function Invoke-CriarPastasEArquivar {
             $nomeBase = if ($V.SourceTxt) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceTxt) }
                         elseif ($V.SourceJson) { [System.IO.Path]::GetFileNameWithoutExtension($V.SourceJson) }
                         else { "relatorio" }
+            # Corpo em texto puro: prioridade do .json via ConvertFrom-RelatorioJson; sem JSON legivel,
+            # limpa o .txt da inbox. Garante o par .txt com YAML na inbox [GD] (aditivo).
             $body = $null
-            if ($V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt)) {
-                $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -LiteralPath $V.SourceTxt -Raw -Encoding UTF8) }
-            } elseif ($V.TxtBody) {
-                $body = $V.TxtBody   # corpo montado do JSON (inbox sem .txt)
-                if ($V.SourceJson) { $null = Write-TxtInboxDoJson -JsonPath $V.SourceJson }   # par na inbox com YAML no topo (aditivo)
+            if ($V.SourceJson -and (Test-Path -LiteralPath $V.SourceJson)) {
+                $body = ConvertFrom-RelatorioJson -Json $V.SourceJson
+                $null = Write-TxtInboxDoJson -JsonPath $V.SourceJson
             }
+            if (-not $body -and $V.SourceTxt -and (Test-Path -LiteralPath $V.SourceTxt)) {
+                $body = if ($V.TxtBody) { $V.TxtBody } else { Remove-YamlHeader (Get-Content -LiteralPath $V.SourceTxt -Raw -Encoding UTF8) }
+            }
+            if (-not $body -and $V.TxtBody) { $body = $V.TxtBody }
             if ($body) {
-                # [OD] recebe APENAS o .txt limpo: sem YAML, sem Markdown, sem secao 10 (.json nunca sobe)
+                # [OD] recebe APENAS o .txt limpo: sem YAML, sem Markdown, sem secao 10 (.json nunca sobe).
+                # Diff antes de sobrescrever: identico -> mantido; diferente -> atualiza com o corpo do JSON.
                 $body = Remove-Secao10 (Remove-MarkdownBasico $body)
-                Set-Content -LiteralPath (Join-Path $dest "$nomeBase.txt") -Value $body -Encoding UTF8
+                Write-TxtDestinoComDiff -Dest $dest -NomeTxt "$nomeBase.txt" -Body $body
                 $levados.Add("$nomeBase.txt")
             }
 
@@ -1460,6 +1513,24 @@ if (@($ScanFisico).Count -gt 0) {
     Write-Host " Drive [GD]: $(@($ScanFisico).Count) pasta(s) fisica(s) | $nNova nova(s) | $nPend pendente(s) de sync | $nSync sincronizada(s)" -ForegroundColor DarkGray
 }
 
+# ================= MENU INICIAL DE MODOS (sem -Colar / -Conferir / -SomenteTexto na linha de comando) =================
+if (-not ($Colar -or $Conferir -or $SomenteTexto)) {
+    Write-Host "`n Escolha o modo de execucao:" -ForegroundColor Cyan
+    Write-Host "   [1] Somente TEXTOS e anexos ATV 1 ([GD] -> [OD]) — cria pastas, gera TXT do JSON com diff e pula fotos" -ForegroundColor White
+    Write-Host "   [2] Triagem COMPLETA (Textos + Fotos/GPS)" -ForegroundColor White
+    Write-Host "   [3] Conferir / Reprocessar visitas existentes" -ForegroundColor White
+    Write-Host "   [4] Colar JSON manual" -ForegroundColor White
+    Write-Host "   [0] Sair" -ForegroundColor White
+    $opMenu = (Read-Host " Modo").Trim()
+    switch ($opMenu) {
+        '1' { $SomenteTexto = $true }
+        '2' { }
+        '3' { Invoke-ConferirReprocessar; exit 0 }
+        '4' { $Colar = $true }
+        default { Write-Host "[OK] Nada a fazer." -ForegroundColor Green; exit 0 }
+    }
+}
+
 # ================= MODO -Conferir: LISTAR / CONFERIR / REPROCESSAR VISITAS JA PROCESSADAS =================
 if ($Conferir) {
     Invoke-ConferirReprocessar
@@ -1530,6 +1601,21 @@ $PastasCriadas = Invoke-CriarPastasEArquivar -RelatorioDias $RelatorioDias
 # Caminhos [GD] dos registros anuais (_processados.json) para o manifesto
 $AnosRel = @($RelatorioDias | ForEach-Object { $_.data.Substring(0, 4) } | Sort-Object -Unique)
 $RegistrosGD = @($AnosRel | ForEach-Object { Join-Path $InboxBase "$_\_inbox_relatorio_ater\_processados.json" } | Where-Object { Test-Path -LiteralPath $_ })
+
+# ================= MODO SOMENTE TEXTO ([1] / -SomenteTexto): encerra SEM a Etapa 2 de fotos =================
+if ($SomenteTexto) {
+    Write-TriagemRun -Registro ([PSCustomObject]@{
+        timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); modo = 'somente_texto'; origens = $RunOrigens
+        pastas_criadas = $PastasCriadas; fotos_copiadas = $RunFotos; gps = $RunGps
+        inbox_gd = $InboxBase; registros_gd = $RegistrosGD; raizes_syncthing = $SyncthingFotos; base_od = $OneDriveBase
+        contagem = [PSCustomObject]@{ visitas = $TotalVisitas; pastas = $PastasCriadas.Count; fotos = 0 }
+    })
+    Write-TriagemLog "TRIAGEM SOMENTE TEXTO FINALIZADA | inbox [GD]: $InboxBase | base [OD]: $OneDriveBase"
+    Write-Host "`nTriagem de TEXTOS concluida! Para enviar agora ao [GDSA], rode .\start-sync.ps1 (ou rode .\triagem-campo.ps1 -Conferir depois para anexar as fotos)." -ForegroundColor Cyan
+    Write-Host "  [OD]  : $OneDriveBase" -ForegroundColor DarkGray
+    Write-Host "  [GDSA]: gdrive_saconsult:VALE DO RIBEIRA/FERNANDO" -ForegroundColor DarkGray
+    exit 0
+}
 
 # ================= ETAPA 2: INDEXAR FOTOS DO SYNCTHING =================
 $RaizesExistentes = @($SyncthingFotos | Where-Object { Test-Path $_ })
